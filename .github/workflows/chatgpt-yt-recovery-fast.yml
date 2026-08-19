@@ -1,0 +1,113 @@
+name: ChatGPT YouTube recovery fast
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/chatgpt-yt-recovery-fast.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  recover-fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Query multi-archive API with hard time limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p raw
+          cat > ids.txt <<'EOF'
+          gZPSuwvz4ro
+          9R_VzlxPyzA
+          KsWhXozSi2g
+          oSYkJcln9NI
+          1QnAsHJm_24
+          nlFYAYuy7So
+          Nw1R4TpAkcU
+          PQJ8y--y16k
+          AV58Skh6t1U
+          Ajq_g24Ttzc
+          yQs7iZ6MhzY
+          fepB-s-nDIc
+          iF0oTjm2vEE
+          4qoXWufGWkY
+          QkuYMngedUQ
+          xTF2Q4VIJoc
+          tIu2kBFYqUY
+          SiqSl6x3XAY
+          FPnckbJPM_I
+          9DBADBtjQbs
+          ohCJcu-XM_c
+          KrniOQZ14jo
+          Wl2fIy4sHB4
+          nafgjey_pLo
+          caadly0-szM
+          feip67YM1j0
+          _Mr9UFDjH0o
+          wTK6pIFRaSk
+          7dSDoh9ebVA
+          8IF03m1bYJI
+          -_TgMzu7J6s
+          _neDP3Dpo_I
+          M0AZ8d0R1PU
+          1u_UVkOYIQU
+          FO78uJ16-qI
+          wOSOr_ZK3gk
+          dG73yRzB9mQ
+          JE-NdIUgTGw
+          2kpxJ6_iVts
+          uo4W0aLpOuU
+          huaB7asdTz8
+          d0QN-BWgfuM
+          EOF
+
+          python3 - <<'PY'
+          import concurrent.futures, json, pathlib, subprocess
+          ids=[x.strip() for x in pathlib.Path('ids.txt').read_text().splitlines() if x.strip()]
+          def one(vid):
+              url=f'https://findyoutubevideo.thetechrobo.ca/api/v5/{vid}?includeRaw=true&stream=true'
+              p=subprocess.run(['curl','-L','-sS','--connect-timeout','7','--max-time','30',url],capture_output=True,text=True)
+              pathlib.Path(f'raw/{vid}.jsonl').write_text(p.stdout)
+              services=[]; verdict=None
+              for line in p.stdout.splitlines():
+                  try: o=json.loads(line)
+                  except: continue
+                  if not isinstance(o,dict): continue
+                  if o.get('type')=='link' and isinstance(o.get('data'),dict):
+                      d=o['data']; services.append(d)
+                  elif o.get('type')=='verdict': verdict=o.get('data')
+                  elif 'name' in o and ('archived' in o or 'available' in o): services.append(o)
+                  elif 'human_friendly' in o and ('has_video' in o or 'metaonly' in o): verdict=o
+              return {'id':vid,'curl_rc':p.returncode,'stderr':p.stderr[-500:], 'services':services,'verdict':verdict}
+          out=[]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=21) as ex:
+              fs={ex.submit(one,v):v for v in ids}
+              for i,f in enumerate(concurrent.futures.as_completed(fs),1):
+                  try:r=f.result()
+                  except Exception as e:r={'id':fs[f],'fatal':repr(e)}
+                  out.append(r); print(f'[{i}/{len(ids)}] {r["id"]}',flush=True)
+          order={v:i for i,v in enumerate(ids)}; out.sort(key=lambda r:order[r['id']])
+          pathlib.Path('fast-summary.json').write_text(json.dumps(out,ensure_ascii=False,indent=2))
+          lines=[]
+          for r in out:
+              hits=[]
+              for s in r.get('services',[]):
+                  if s.get('archived') or s.get('metaonly') or s.get('available'):
+                      hits.append(s.get('name') or s.get('classname') or '?')
+              lines.append(f"{r['id']}\trc={r.get('curl_rc')}\thits={','.join(hits)}")
+          pathlib.Path('fast-summary.tsv').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+      - name: Upload fast evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-youtube-recovery-fast
+          path: |
+            ids.txt
+            fast-summary.json
+            fast-summary.tsv
+            raw/
+          if-no-files-found: error
+          retention-days: 3
