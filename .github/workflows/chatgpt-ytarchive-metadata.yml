@@ -1,0 +1,105 @@
+name: ChatGPT ytarchive metadata recovery
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/chatgpt-ytarchive-metadata.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  ytarchive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install current yt-dlp
+        run: python3 -m pip install --user -U yt-dlp
+      - name: Query archived YouTube metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p raw
+          cat > ids.txt <<'EOF'
+          gZPSuwvz4ro
+          9R_VzlxPyzA
+          KsWhXozSi2g
+          oSYkJcln9NI
+          1QnAsHJm_24
+          nlFYAYuy7So
+          Nw1R4TpAkcU
+          PQJ8y--y16k
+          AV58Skh6t1U
+          Ajq_g24Ttzc
+          yQs7iZ6MhzY
+          fepB-s-nDIc
+          iF0oTjm2vEE
+          4qoXWufGWkY
+          QkuYMngedUQ
+          xTF2Q4VIJoc
+          tIu2kBFYqUY
+          SiqSl6x3XAY
+          FPnckbJPM_I
+          9DBADBtjQbs
+          ohCJcu-XM_c
+          KrniOQZ14jo
+          Wl2fIy4sHB4
+          nafgjey_pLo
+          caadly0-szM
+          feip67YM1j0
+          _Mr9UFDjH0o
+          wTK6pIFRaSk
+          7dSDoh9ebVA
+          8IF03m1bYJI
+          -_TgMzu7J6s
+          _neDP3Dpo_I
+          M0AZ8d0R1PU
+          1u_UVkOYIQU
+          FO78uJ16-qI
+          wOSOr_ZK3gk
+          dG73yRzB9mQ
+          JE-NdIUgTGw
+          2kpxJ6_iVts
+          uo4W0aLpOuU
+          huaB7asdTz8
+          d0QN-BWgfuM
+          EOF
+          python3 - <<'PY'
+          import concurrent.futures, json, pathlib, subprocess
+          ids=[x.strip() for x in pathlib.Path('ids.txt').read_text().splitlines() if x.strip()]
+          def one(v):
+              cmd=['yt-dlp','--skip-download','--ignore-no-formats-error','--no-warnings','--dump-single-json',f'ytarchive:{v}']
+              try:
+                  p=subprocess.run(cmd,capture_output=True,text=True,timeout=75)
+                  pathlib.Path(f'raw/{v}.stdout').write_text(p.stdout)
+                  pathlib.Path(f'raw/{v}.stderr').write_text(p.stderr)
+                  data=None
+                  if p.stdout.strip():
+                      try:data=json.loads(p.stdout)
+                      except:pass
+                  return {'id':v,'rc':p.returncode,'title':(data or {}).get('title'),'uploader':(data or {}).get('uploader'),'channel':(data or {}).get('channel'),'upload_date':(data or {}).get('upload_date'),'description':(data or {}).get('description'),'webpage_url':(data or {}).get('webpage_url'),'stderr':p.stderr[-1000:]}
+              except subprocess.TimeoutExpired as e:
+                  return {'id':v,'timeout':True,'stderr':((e.stderr or '') if isinstance(e.stderr,str) else '')[-1000:]}
+          out=[]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+              fs={ex.submit(one,v):v for v in ids}
+              for i,f in enumerate(concurrent.futures.as_completed(fs),1):
+                  try:r=f.result()
+                  except Exception as e:r={'id':fs[f],'fatal':repr(e)}
+                  out.append(r); print(f'[{i}/{len(ids)}] {r["id"]}: {r.get("title")}',flush=True)
+          order={v:i for i,v in enumerate(ids)}; out.sort(key=lambda r:order[r['id']])
+          pathlib.Path('ytarchive-summary.json').write_text(json.dumps(out,ensure_ascii=False,indent=2))
+          pathlib.Path('ytarchive-summary.tsv').write_text('\n'.join(f"{r['id']}\t{r.get('title') or ''}\t{r.get('uploader') or r.get('channel') or ''}\trc={r.get('rc','')}\ttimeout={r.get('timeout','')}" for r in out)+'\n')
+          print(pathlib.Path('ytarchive-summary.tsv').read_text())
+          PY
+      - name: Upload ytarchive evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-ytarchive-metadata
+          path: |
+            ids.txt
+            ytarchive-summary.json
+            ytarchive-summary.tsv
+            raw/
+          if-no-files-found: error
+          retention-days: 3
