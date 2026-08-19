@@ -1,0 +1,79 @@
+name: chatgpt-temp-final-transfer
+
+on:
+  push:
+    branches:
+      - chatgpt-tmp-yt-dlp-20260819
+    paths:
+      - .github/workflows/chatgpt-tmp-final-transfer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt-tmp-yt-dlp-20260819
+          fetch-depth: 1
+
+      - name: Reuse final builder and make compressed transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+          src=Path('.github/workflows/chatgpt-tmp-ytdlp-playlists.yml').read_text(encoding='utf-8')
+          marker="          python - <<'PY'\n"
+          start=src.index(marker)+len(marker)
+          end=src.index("\n          PY\n", start)
+          code=textwrap.dedent(src[start:end])
+          Path('/tmp/final_builder.py').write_text(code,encoding='utf-8')
+          PY
+          python /tmp/final_builder.py
+
+          test "$(wc -l < 'out/Songs/SONGS - all videos.txt')" -eq 1713
+          test "$(wc -l < 'out/Songs/SONGS - unavailable videos.txt')" -eq 139
+          test "$(wc -l < 'out/S/S - all videos.txt')" -eq 253
+          test "$(wc -l < 'out/S/S - unavailable videos.txt')" -eq 7
+
+          cp out/recovery-report.json chatgpt-final-report.json
+          rm -f chatgpt-final-bundle.b64.part*
+          (cd out && zip -q -r ../chatgpt-final-playlist-files.zip S Songs recovery-report.json)
+          base64 -w 0 chatgpt-final-playlist-files.zip > /tmp/bundle.b64
+          split -b 12000 -d -a 2 --additional-suffix=.txt /tmp/bundle.b64 /tmp/part
+          i=1
+          for p in /tmp/part*.txt; do
+            printf -v n '%02d' "$i"
+            cp "$p" "chatgpt-final-bundle.b64.part${n}"
+            i=$((i+1))
+          done
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          z=Path('chatgpt-final-playlist-files.zip')
+          parts=sorted(Path('.').glob('chatgpt-final-bundle.b64.part*'))
+          report=json.loads(Path('chatgpt-final-report.json').read_text(encoding='utf-8'))
+          manifest={
+            'bundle_parts':len(parts),
+            'zip_bytes':z.stat().st_size,
+            'zip_sha256':hashlib.sha256(z.read_bytes()).hexdigest(),
+            'report':report,
+          }
+          Path('chatgpt-final-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print(json.dumps(manifest,ensure_ascii=False,indent=2))
+          PY
+
+      - name: Commit transfer chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'chatgpt-temp-bot'
+          git config user.email 'chatgpt-temp-bot@users.noreply.github.com'
+          git add chatgpt-final-report.json chatgpt-final-manifest.json chatgpt-final-bundle.b64.part*
+          git commit -m 'Temporary final playlist transfer bundle' || exit 0
+          git push origin HEAD:chatgpt-tmp-yt-dlp-20260819
