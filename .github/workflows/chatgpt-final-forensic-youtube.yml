@@ -1,0 +1,206 @@
+name: ChatGPT final forensic YouTube recovery
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-final-forensic-youtube.yml
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Run final forensic recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q requests beautifulsoup4
+          python3 - <<'PY'
+          import requests, re, json, pathlib, urllib.parse, time
+          from bs4 import BeautifulSoup
+
+          VID='9R_VzlxPyzA'
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'})
+          out={}
+          def req(method,url,**kw):
+              try:
+                  r=S.request(method,url,timeout=25,allow_redirects=True,**kw)
+                  z={'status':r.status_code,'url':r.url,'headers':dict(r.headers)}
+                  ct=r.headers.get('content-type','')
+                  if 'json' in ct:
+                      try:z['json']=r.json()
+                      except:z['text']=r.text[:30000]
+                  else:z['text']=r.text[:30000]
+                  return z
+              except Exception as e:
+                  return {'error':repr(e),'url':url}
+
+          for ver in ['v5','v4']:
+              url=f'https://findyoutubevideo.thetechrobo.ca/api/{ver}/{VID}?includeRaw=true'
+              out[f'findyoutubevideo_{ver}']=req('GET',url)
+
+          urls={
+            'archivarix_q':f'https://tube.archivarix.net/?q={VID}',
+            'archivarix_reupload':f'https://tube.archivarix.net/find-reupload/{VID}',
+            'ghostarchive':f'https://ghostarchive.org/varchive/{VID}',
+            'youtuberecover':f'https://www.youtuberecover.com/watch?v={VID}',
+            'preservetube_q':f'https://preservetube.com/?q={VID}',
+            'preservetube_search':f'https://preservetube.com/search?search={VID}',
+            'quiteaplaylist':f'https://quiteaplaylist.com/search?url=https://www.youtube.com/watch?v={VID}',
+            'filmot':f'https://filmot.com/video/{VID}',
+            'mattw':f'https://mattw.io/youtube-metadata/?submit=true&url=https://www.youtube.com/watch?v={VID}',
+            'lemnos':f'https://yt.lemnoslife.com/noKey/videos?part=snippet,contentDetails,status&id={VID}',
+          }
+          for k,u in urls.items(): out[k]=req('GET',u)
+
+          apis={
+            'grepapp':f'https://grep.app/api/search?q={urllib.parse.quote(VID)}',
+            'hn_algolia':f'https://hn.algolia.com/api/v1/search?query={VID}&tags=story,comment',
+            'bluesky':f'https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q={urllib.parse.quote(VID)}&limit=100',
+            'urlscan':f'https://urlscan.io/api/v1/search/?q={urllib.parse.quote("filename:"+VID)}',
+            'archive_adv': 'https://archive.org/advancedsearch.php?'+urllib.parse.urlencode({'q':f'"{VID}"','fl[]':['identifier','title','description','creator'],'rows':100,'output':'json'},doseq=True),
+          }
+          for k,u in apis.items(): out[k]=req('GET',u)
+
+          surfaces=[
+            f'https://www.youtube.com/watch?v={VID}',
+            f'https://m.youtube.com/watch?v={VID}',
+            f'https://music.youtube.com/watch?v={VID}',
+            f'https://www.youtube.com/embed/{VID}',
+            f'https://www.youtube-nocookie.com/embed/{VID}',
+            f'https://www.youtube.com/shorts/{VID}',
+            f'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v={VID}',
+            f'https://www.youtube.com/get_video_info?video_id={VID}&el=embedded&hl=en',
+          ]
+          pages=[]
+          api_key=None; web_ver=None
+          for u in surfaces:
+              r=req('GET',u); rec={'request':u,'response':r}
+              text=r.get('text','')
+              sig={}
+              patterns={
+                'api_key':r'"INNERTUBE_API_KEY":"([^"]+)',
+                'client_version':r'"INNERTUBE_CLIENT_VERSION":"([^"]+)',
+                'title':r'"videoDetails":\{.*?"title":"((?:\\.|[^"])*)"',
+                'lengthSeconds':r'"lengthSeconds":"(\d+)"',
+                'author':r'"author":"((?:\\.|[^"])*)"',
+                'channelId':r'"channelId":"([^"]+)"',
+                'shortDescription':r'"shortDescription":"((?:\\.|[^"])*)"',
+                'reason':r'"reason":"((?:\\.|[^"])*)"',
+              }
+              for k,p in patterns.items():
+                  m=re.search(p,text,re.S)
+                  if m:
+                      v=m.group(1)
+                      if k in ('title','author','shortDescription','reason'):
+                          try:v=json.loads('"'+v+'"')
+                          except:pass
+                      sig[k]=v
+              rec['signals']=sig; pages.append(rec)
+              if not api_key and sig.get('api_key'): api_key=sig['api_key']
+              if not web_ver and sig.get('client_version'): web_ver=sig['client_version']
+          out['youtube_surfaces']=pages
+
+          if api_key:
+              clients=[
+                ('WEB',web_ver or '2.20260817.01.00',{}),
+                ('MWEB','2.20260817.01.00',{}),
+                ('WEB_EMBEDDED_PLAYER','1.20260817.00.00',{}),
+                ('TVHTML5','7.20260817',{}),
+                ('TVHTML5_SIMPLY_EMBEDDED_PLAYER','2.0',{}),
+                ('ANDROID','21.31.35',{'androidSdkVersion':35}),
+                ('ANDROID_VR','1.60.19',{'androidSdkVersion':35}),
+                ('ANDROID_TESTSUITE','1.9',{'androidSdkVersion':35}),
+                ('IOS','21.31.4',{'deviceMake':'Apple','deviceModel':'iPhone17,1','osName':'iPhone','osVersion':'18.5'}),
+                ('WEB_REMIX','1.20260811.15.00',{}),
+                ('ANDROID_MUSIC','8.30.54',{'androidSdkVersion':35}),
+                ('IOS_MUSIC','8.30',{'deviceMake':'Apple','deviceModel':'iPhone17,1','osName':'iPhone','osVersion':'18.5'}),
+              ]
+              inn={}
+              for name,ver,extra in clients:
+                  client={'clientName':name,'clientVersion':ver,'hl':'en','gl':'US'}; client.update(extra)
+                  payload={'context':{'client':client},'videoId':VID,'contentCheckOk':True,'racyCheckOk':True}
+                  url='https://www.youtube.com/youtubei/v1/player?key='+api_key+'&prettyPrint=false'
+                  inn[name]=req('POST',url,json=payload,headers={'Content-Type':'application/json','Origin':'https://www.youtube.com'})
+              out['innertube_clients']=inn
+
+              common={'context':{'client':{'clientName':'WEB','clientVersion':web_ver or '2.20260817.01.00','hl':'en','gl':'US'}}}
+              out['innertube_next']=req('POST','https://www.youtube.com/youtubei/v1/next?key='+api_key+'&prettyPrint=false',json={**common,'videoId':VID},headers={'Content-Type':'application/json','Origin':'https://www.youtube.com'})
+              out['innertube_resolve']=req('POST','https://www.youtube.com/youtubei/v1/navigation/resolve_url?key='+api_key+'&prettyPrint=false',json={**common,'url':f'https://www.youtube.com/watch?v={VID}'},headers={'Content-Type':'application/json','Origin':'https://www.youtube.com'})
+              for q in [VID, f'"{VID}"', 'ZXKAI slxughter NO BATIDÃO', 'ZXKAI slxughter NO BATIDÃO Super Slowed', 'ZXKAI slxughter NO BATIDÃO Slowed']:
+                  out['ytsearch_'+re.sub(r'[^A-Za-z0-9]+','_',q)[:40]]=req('POST','https://www.youtube.com/youtubei/v1/search?key='+api_key+'&prettyPrint=false',json={**common,'query':q},headers={'Content-Type':'application/json','Origin':'https://www.youtube.com'})
+
+              out['data_api_v3']=req('GET','https://www.googleapis.com/youtube/v3/videos?'+urllib.parse.urlencode({'part':'snippet,contentDetails,status','id':VID,'key':api_key}))
+
+          inst=req('GET','https://api.invidious.io/instances.json?sort_by=health')
+          out['invidious_instance_list']=inst
+          inv=[]
+          if isinstance(inst.get('json'), list):
+              for row in inst['json'][:40]:
+                  try:
+                      host,meta=row
+                      if not meta.get('api') or not meta.get('uri','').startswith('https://'): continue
+                      base=meta['uri'].rstrip('/')
+                      a=req('GET',base+f'/api/v1/videos/{VID}')
+                      b=req('GET',base+'/api/v1/search?'+urllib.parse.urlencode({'q':VID,'type':'video'}))
+                      inv.append({'base':base,'video':a,'search':b})
+                  except Exception as e: inv.append({'error':repr(e)})
+                  if len(inv)>=25: break
+          out['invidious']=inv
+
+          queries=[VID, f'"{VID}"', f'"watch?v={VID}"', f'"youtu.be/{VID}"', f'"{VID}" "NO BATIDÃO"', f'"{VID}" "Super Slowed"']
+          engines={
+            'duckduckgo':'https://html.duckduckgo.com/html/?q=',
+            'brave':'https://search.brave.com/search?q=',
+            'yahoo':'https://search.yahoo.com/search?p=',
+            'ecosia':'https://www.ecosia.org/search?q=',
+            'startpage':'https://www.startpage.com/sp/search?query=',
+            'yandex':'https://yandex.com/search/?text=',
+            'bing':'https://www.bing.com/search?q=',
+            'google':'https://www.google.com/search?q=',
+          }
+          search=[]
+          for q in queries:
+              for name,base in engines.items():
+                  r=req('GET',base+urllib.parse.quote(q))
+                  txt=r.get('text','')
+                  soup=BeautifulSoup(txt,'html.parser') if txt else None
+                  titles=[]
+                  if soup:
+                      for tag in soup.find_all(['h2','h3','a']):
+                          t=' '.join(tag.stripped_strings)
+                          if t and (VID.lower() in t.lower() or 'batid' in t.lower()):
+                              titles.append(t[:500])
+                              if len(titles)>=20: break
+                  search.append({'engine':name,'query':q,'status':r.get('status'),'final_url':r.get('url'),'signals':titles,'contains_id':VID in txt})
+          out['search_engines']=search
+
+          pathlib.Path('forensic.json').write_text(json.dumps(out,indent=2,ensure_ascii=False))
+
+          def walk(x,path=''):
+              hits=[]
+              if isinstance(x,dict):
+                  for k,v in x.items(): hits.extend(walk(v,path+'/'+str(k)))
+              elif isinstance(x,list):
+                  for i,v in enumerate(x): hits.extend(walk(v,path+f'[{i}]'))
+              elif isinstance(x,str):
+                  s=x.lower()
+                  if VID.lower() in s or 'batid' in s or 'title' in path.lower() or 'videodetails' in path.lower() or 'lengthseconds' in path.lower() or 'copyright' in s or 'believe' in s or 'orchard' in s or 'rubix' in s:
+                      if len(x)<4000: hits.append((path,x))
+              return hits
+          hits=walk(out)
+          print('=== HIGH VALUE SIGNALS ===')
+          for p,v in hits[:800]: print(p,'=>',v.replace('\n',' ')[:1200])
+          print('=== FINDYOUTUBEVIDEO ===')
+          print(json.dumps(out.get('findyoutubevideo_v5'),indent=2,ensure_ascii=False)[:50000])
+          PY
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-final-forensic-youtube
+          path: forensic.json
+          retention-days: 3
