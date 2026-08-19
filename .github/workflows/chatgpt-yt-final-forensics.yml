@@ -2,6 +2,8 @@ name: ChatGPT YouTube Final Forensics
 on:
   push:
     branches: [chatgpt-tmp-yt-final-20260819]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 jobs:
   forensic:
@@ -16,7 +18,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import requests, json, re, urllib.parse, concurrent.futures, subprocess, os, sys
+          import requests, json, urllib.parse, concurrent.futures, subprocess
           VID='9R_VzlxPyzA'
           UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36'}
           urls={
@@ -74,8 +76,7 @@ jobs:
               for target in [f'youtube.com/watch?v={VID}', f'music.youtube.com/watch?v={VID}', f'*{VID}*']:
                 try:
                   r=requests.get(api,params={'url':target,'output':'json','filter':'status:200'},headers=UA,timeout=20)
-                  if r.status_code==200 and r.text.strip():
-                    print(entry['id'], target, r.status_code, r.text[:8000])
+                  if r.status_code==200 and r.text.strip(): print(entry['id'], target, r.status_code, r.text[:8000])
                 except Exception as e: print('CCERR',entry['id'],target,repr(e))
           except Exception as e: print('CC INDEX ERR',repr(e))
 
@@ -85,10 +86,8 @@ jobs:
             yt=YTMusic()
             for q in [VID, 'ZXKAI slxughter NO BATIDAO', 'ZXKAI slxughter NO BATIDÃO Super Slowed', 'ZXKAI slxughter NO BATIDÃO Slowed']:
               print('QUERY',q)
-              res=yt.search(q, limit=20)
-              for x in res:
-                if x.get('videoId') or x.get('browseId'):
-                  print(json.dumps(x,ensure_ascii=False)[:4000])
+              for x in yt.search(q, limit=20):
+                if x.get('videoId') or x.get('browseId'): print(json.dumps(x,ensure_ascii=False)[:4000])
           except Exception as e: print('YTMUSIC ERR',repr(e))
 
           print('\n===== ORIGINAL PLAYLIST FLAT ENTRY =====')
@@ -97,8 +96,7 @@ jobs:
             p=subprocess.run(['yt-dlp','--flat-playlist','--dump-json',pl],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=900)
             print('yt-dlp rc',p.returncode)
             for line in p.stdout.splitlines():
-              if VID in line:
-                print('MATCH',line)
+              if VID in line: print('MATCH',line)
             print('stderr tail',p.stderr[-6000:])
           except Exception as e: print('PLAYLIST ERR',repr(e))
 
