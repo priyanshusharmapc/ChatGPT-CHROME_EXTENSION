@@ -1,0 +1,70 @@
+name: ChatGPT S Playlist Refresh
+
+on:
+  push:
+    branches:
+      - chatgpt-tmp-s-refresh-20260819
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install yt-dlp
+        run: python -m pip install --upgrade yt-dlp
+
+      - name: Extract playlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://www.youtube.com/playlist?list=PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G'
+          mkdir -p out
+          yt-dlp --flat-playlist --ignore-errors --dump-json "$URL" > out/all.ndjson
+          yt-dlp --flat-playlist --ignore-errors --compat-options no-youtube-unavailable-videos --dump-json "$URL" > out/available.ndjson
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          out = Path('out')
+          def load(path):
+              rows=[]
+              for line in path.read_text(encoding='utf-8').splitlines():
+                  if not line.strip():
+                      continue
+                  try:
+                      rows.append(json.loads(line))
+                  except Exception:
+                      pass
+              return rows
+
+          all_rows=load(out/'all.ndjson')
+          avail_rows=load(out/'available.ndjson')
+          avail_ids={str(x.get('id')) for x in avail_rows if x.get('id')}
+          unavail=[x for x in all_rows if x.get('id') and str(x.get('id')) not in avail_ids]
+
+          def line_for(x):
+              vid=str(x.get('id') or '')
+              title=x.get('title')
+              if title in (None, '', '[Private video]', '[Deleted video]', 'Private video', 'Deleted video'):
+                  title='(no title)'
+              return f"{title} - https://www.youtube.com/watch?v={vid}"
+
+          (out/'live_all.txt').write_text('\n'.join(line_for(x) for x in all_rows)+'\n', encoding='utf-8')
+          (out/'live_unavailable.txt').write_text('\n'.join(line_for(x) for x in unavail)+'\n', encoding='utf-8')
+          (out/'summary.json').write_text(json.dumps({
+              'total': len(all_rows),
+              'available': len(avail_rows),
+              'unavailable': len(unavail),
+              'unavailable_ids': [str(x.get('id')) for x in unavail],
+          }, indent=2), encoding='utf-8')
+          print((out/'summary.json').read_text())
+          PY
+
+      - name: Upload extraction
+        uses: actions/upload-artifact@v4
+        with:
+          name: s-playlist-refresh
+          path: out/
+          retention-days: 1
