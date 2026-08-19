@@ -1,0 +1,111 @@
+name: ChatGPT YouTube Final Forensics
+on:
+  push:
+    branches: [chatgpt-tmp-yt-final-20260819]
+  workflow_dispatch:
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          python -m pip install -q --upgrade yt-dlp ytmusicapi requests
+      - name: Exhaustive lookup
+        shell: bash
+        run: |
+          python - <<'PY'
+          import requests, json, re, urllib.parse, concurrent.futures, subprocess, os, sys
+          VID='9R_VzlxPyzA'
+          UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36'}
+          urls={
+            'finder_raw':f'https://findyoutubevideo.thetechrobo.ca/api/v5/{VID}?includeRaw=true',
+            'wayback_avail':f'https://archive.org/wayback/available?url=https://www.youtube.com/watch?v={VID}',
+            'wayback_cdx_watch':f'https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{VID}&output=json&fl=timestamp,original,statuscode,mimetype,digest&filter=statuscode:200&collapse=digest',
+            'wayback_cdx_music':f'https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fmusic.youtube.com%2Fwatch%3Fv%3D{VID}&output=json&fl=timestamp,original,statuscode,mimetype,digest&filter=statuscode:200&collapse=digest',
+            'wayback_cdx_short':f'https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fyoutu.be%2F{VID}&output=json&fl=timestamp,original,statuscode,mimetype,digest&filter=statuscode:200&collapse=digest',
+            'wayback_cdx_embed':f'https://web.archive.org/cdx/search/cdx?url=https%3A%2F%2Fwww.youtube.com%2Fembed%2F{VID}&output=json&fl=timestamp,original,statuscode,mimetype,digest&filter=statuscode:200&collapse=digest',
+            'ia_search':f'https://archive.org/advancedsearch.php?q=%22{VID}%22&fl[]=identifier&fl[]=title&fl[]=description&rows=50&page=1&output=json',
+            'oembed':f'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={VID}&format=json',
+            'noembed':f'https://noembed.com/embed?url=https://www.youtube.com/watch?v={VID}',
+            'get_video_info':f'https://www.youtube.com/get_video_info?video_id={VID}',
+            'youtube_watch':f'https://www.youtube.com/watch?v={VID}',
+            'youtube_music':f'https://music.youtube.com/watch?v={VID}',
+            'nocookie_embed':f'https://www.youtube-nocookie.com/embed/{VID}',
+            'dearrow':f'https://sponsor.ajay.app/api/branding?videoID={VID}',
+            'ryd':f'https://returnyoutubedislikeapi.com/votes?videoId={VID}',
+            'lemnos':f'https://yt.lemnoslife.com/noKey/videos?part=snippet,contentDetails,status&id={VID}',
+            'ghostarchive':f'https://ghostarchive.org/varchive/{VID}',
+            'preservetube':f'https://preservetube.com/watch?v={VID}',
+            'invidious_nadeko':f'https://inv.nadeko.net/api/v1/videos/{VID}',
+            'invidious_materialious':f'https://invidious.materialio.us/api/v1/videos/{VID}',
+            'piped_kavin':f'https://pipedapi.kavin.rocks/streams/{VID}',
+            'piped_reallyaweso':f'https://pipedapi.reallyaweso.me/streams/{VID}',
+            'thumb_max':f'https://i.ytimg.com/vi/{VID}/maxresdefault.jpg',
+            'thumb_hq':f'https://i.ytimg.com/vi/{VID}/hqdefault.jpg',
+            'ddg':f'https://html.duckduckgo.com/html/?q={urllib.parse.quote(chr(34)+VID+chr(34))}',
+            'bing':f'https://www.bing.com/search?q={urllib.parse.quote(chr(34)+VID+chr(34))}',
+            'yahoo':f'https://search.yahoo.com/search?p={urllib.parse.quote(chr(34)+VID+chr(34))}',
+          }
+          def getone(k,u):
+            try:
+              r=requests.get(u,headers=UA,timeout=25,allow_redirects=True)
+              ct=r.headers.get('content-type','')
+              if 'image' in ct or 'octet-stream' in ct:
+                body=f'<binary {len(r.content)} bytes sha-prefix={__import__("hashlib").sha256(r.content).hexdigest()[:16]}>'
+              else:
+                body=r.text[:12000]
+              return k, r.status_code, str(r.url), ct, body
+            except Exception as e:
+              return k, 'ERR', u, '', repr(e)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+            futs=[ex.submit(getone,k,u) for k,u in urls.items()]
+            for f in concurrent.futures.as_completed(futs):
+              k,s,final,ct,body=f.result()
+              print('\n=====ENDPOINT',k,'STATUS',s,'FINAL',final,'CT',ct,'=====')
+              print(body)
+
+          print('\n===== COMMON CRAWL =====')
+          try:
+            idx=requests.get('https://index.commoncrawl.org/collinfo.json',headers=UA,timeout=20).json()
+            for entry in idx[:8]:
+              api=entry['cdx-api']
+              for target in [f'youtube.com/watch?v={VID}', f'music.youtube.com/watch?v={VID}', f'*{VID}*']:
+                try:
+                  r=requests.get(api,params={'url':target,'output':'json','filter':'status:200'},headers=UA,timeout=20)
+                  if r.status_code==200 and r.text.strip():
+                    print(entry['id'], target, r.status_code, r.text[:8000])
+                except Exception as e: print('CCERR',entry['id'],target,repr(e))
+          except Exception as e: print('CC INDEX ERR',repr(e))
+
+          print('\n===== YTMUSIC SEARCH =====')
+          try:
+            from ytmusicapi import YTMusic
+            yt=YTMusic()
+            for q in [VID, 'ZXKAI slxughter NO BATIDAO', 'ZXKAI slxughter NO BATIDÃO Super Slowed', 'ZXKAI slxughter NO BATIDÃO Slowed']:
+              print('QUERY',q)
+              res=yt.search(q, limit=20)
+              for x in res:
+                if x.get('videoId') or x.get('browseId'):
+                  print(json.dumps(x,ensure_ascii=False)[:4000])
+          except Exception as e: print('YTMUSIC ERR',repr(e))
+
+          print('\n===== ORIGINAL PLAYLIST FLAT ENTRY =====')
+          pl='https://www.youtube.com/playlist?list=PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G'
+          try:
+            p=subprocess.run(['yt-dlp','--flat-playlist','--dump-json',pl],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=900)
+            print('yt-dlp rc',p.returncode)
+            for line in p.stdout.splitlines():
+              if VID in line:
+                print('MATCH',line)
+            print('stderr tail',p.stderr[-6000:])
+          except Exception as e: print('PLAYLIST ERR',repr(e))
+
+          print('\n===== YT-DLP DIRECT =====')
+          for url in [f'https://www.youtube.com/watch?v={VID}',f'https://music.youtube.com/watch?v={VID}',f'ytarchive:{VID}']:
+            try:
+              p=subprocess.run(['yt-dlp','--ignore-no-formats-error','--dump-single-json',url],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=180)
+              print('URL',url,'RC',p.returncode,'STDOUT',p.stdout[:12000],'STDERR',p.stderr[-5000:])
+            except Exception as e: print('YTDLP ERR',url,repr(e))
+          PY
