@@ -1,0 +1,170 @@
+name: ChatGPT YouTube recovery pass 2
+
+on:
+  push:
+    branches:
+      - chatgpt-tmp-yt-dlp-20260819
+    paths:
+      - .github/workflows/chatgpt-yt-recovery-pass2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Build evidence bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/finder evidence/wayback evidence/ghostarchive evidence/oembed
+          cat > ids.txt <<'EOF'
+          gZPSuwvz4ro
+          9R_VzlxPyzA
+          KsWhXozSi2g
+          oSYkJcln9NI
+          1QnAsHJm_24
+          nlFYAYuy7So
+          Nw1R4TpAkcU
+          PQJ8y--y16k
+          AV58Skh6t1U
+          Ajq_g24Ttzc
+          yQs7iZ6MhzY
+          fepB-s-nDIc
+          iF0oTjm2vEE
+          4qoXWufGWkY
+          QkuYMngedUQ
+          xTF2Q4VIJoc
+          tIu2kBFYqUY
+          SiqSl6x3XAY
+          FPnckbJPM_I
+          9DBADBtjQbs
+          ohCJcu-XM_c
+          KrniOQZ14jo
+          Wl2fIy4sHB4
+          nafgjey_pLo
+          caadly0-szM
+          feip67YM1j0
+          _Mr9UFDjH0o
+          wTK6pIFRaSk
+          7dSDoh9ebVA
+          8IF03m1bYJI
+          -_TgMzu7J6s
+          _neDP3Dpo_I
+          M0AZ8d0R1PU
+          1u_UVkOYIQU
+          FO78uJ16-qI
+          wOSOr_ZK3gk
+          dG73yRzB9mQ
+          JE-NdIUgTGw
+          2kpxJ6_iVts
+          uo4W0aLpOuU
+          huaB7asdTz8
+          d0QN-BWgfuM
+          EOF
+
+          python3 - <<'PY'
+          import json, pathlib, time, urllib.parse, urllib.request, urllib.error
+
+          ids = [x.strip() for x in pathlib.Path('ids.txt').read_text().splitlines() if x.strip()]
+          ua = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
+
+          def fetch(url, timeout=45):
+              req = urllib.request.Request(url, headers={'User-Agent': ua, 'Accept': '*/*'})
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      return r.status, r.headers.get('content-type',''), r.read()
+              except urllib.error.HTTPError as e:
+                  try: body = e.read()
+                  except Exception: body = b''
+                  return e.code, e.headers.get('content-type','') if e.headers else '', body
+              except Exception as e:
+                  return 0, '', str(e).encode()
+
+          summary = []
+          for n, vid in enumerate(ids, 1):
+              row = {'id': vid}
+              print(f'[{n}/{len(ids)}] {vid}', flush=True)
+
+              finder = f'https://findyoutubevideo.thetechrobo.ca/api/v5/{vid}?includeRaw=true'
+              status, ctype, body = fetch(finder, 90)
+              pathlib.Path(f'evidence/finder/{vid}.json').write_bytes(body)
+              row['finder_status'] = status
+              try:
+                  data = json.loads(body)
+                  row['finder_verdict'] = data.get('verdict')
+                  row['finder_services'] = [
+                      {
+                          'name': k.get('name'), 'archived': k.get('archived'),
+                          'metaonly': k.get('metaonly'), 'error': k.get('error'),
+                          'available': k.get('available'), 'rawraw': k.get('rawraw')
+                      } for k in data.get('keys', [])
+                  ]
+              except Exception as e:
+                  row['finder_parse_error'] = str(e)
+
+              watch = f'https://www.youtube.com/watch?v={vid}'
+              cdx = 'https://web.archive.org/cdx/search/cdx?' + urllib.parse.urlencode({
+                  'url': watch, 'output': 'json', 'filter': 'statuscode:200',
+                  'filter': 'mimetype:text/html', 'fl': 'timestamp,original,statuscode,mimetype,digest',
+                  'collapse': 'digest', 'limit': '50'
+              })
+              status, ctype, body = fetch(cdx, 60)
+              pathlib.Path(f'evidence/wayback/{vid}.json').write_bytes(body)
+              row['wayback_cdx_status'] = status
+              try:
+                  arr = json.loads(body)
+                  row['wayback_capture_count_returned'] = max(0, len(arr)-1) if isinstance(arr, list) else None
+                  row['wayback_first'] = arr[1] if isinstance(arr, list) and len(arr)>1 else None
+              except Exception as e:
+                  row['wayback_parse_error'] = str(e)
+
+              ghost = 'https://ghostarchive.org/search?' + urllib.parse.urlencode({'term': watch})
+              status, ctype, body = fetch(ghost, 60)
+              pathlib.Path(f'evidence/ghostarchive/{vid}.html').write_bytes(body)
+              row['ghost_status'] = status
+              text = body.decode('utf-8', 'ignore')
+              row['ghost_mentions_id'] = vid in text
+
+              oembed = 'https://www.youtube.com/oembed?' + urllib.parse.urlencode({'url': watch, 'format': 'json'})
+              status, ctype, body = fetch(oembed, 30)
+              pathlib.Path(f'evidence/oembed/{vid}.json').write_bytes(body)
+              row['oembed_status'] = status
+              try:
+                  od = json.loads(body)
+                  row['oembed_title'] = od.get('title')
+                  row['oembed_author_name'] = od.get('author_name')
+              except Exception:
+                  pass
+
+              summary.append(row)
+              pathlib.Path('summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+              time.sleep(0.35)
+
+          pathlib.Path('summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+
+          # Compact TSV for fast review.
+          lines = ['id\tfinder_http\thas_video\tmetaonly\tcomments\twayback_count\tghost_mentions\toembed_title']
+          for r in summary:
+              v = r.get('finder_verdict') or {}
+              title = (r.get('oembed_title') or '').replace('\t',' ').replace('\n',' ')
+              lines.append('\t'.join(map(str,[r['id'],r.get('finder_status',''),v.get('has_video',''),v.get('metaonly',''),v.get('comments',''),r.get('wayback_capture_count_returned',''),r.get('ghost_mentions_id',''),title])))
+          pathlib.Path('summary.tsv').write_text('\n'.join(lines)+'\n')
+          PY
+
+          echo '=== SUMMARY TSV ==='
+          cat summary.tsv
+
+      - name: Upload evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-youtube-recovery-pass2
+          path: |
+            ids.txt
+            summary.json
+            summary.tsv
+            evidence/
+          if-no-files-found: error
+          retention-days: 3
