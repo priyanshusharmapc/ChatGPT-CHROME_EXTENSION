@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://www.youtube.com/playlist?list=PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G'
+          URL='https://www.youtube.com/playlist?list=PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx'
           mkdir -p out
           yt-dlp --flat-playlist --ignore-errors --dump-json "$URL" > out/all.ndjson
           yt-dlp --flat-playlist --ignore-errors --compat-options no-youtube-unavailable-videos --dump-json "$URL" > out/available.ndjson
@@ -57,6 +57,7 @@ jobs:
           (out/'live_all.txt').write_text('\n'.join(line_for(x) for x in all_rows)+'\n', encoding='utf-8')
           (out/'live_unavailable.txt').write_text('\n'.join(line_for(x) for x in unavail)+'\n', encoding='utf-8')
           (out/'summary.json').write_text(json.dumps({
+              'playlist_id': 'PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx',
               'total': len(all_rows),
               'available': len(avail_rows),
               'unavailable': len(unavail),
