@@ -2,15 +2,11 @@ name: ChatGPT YouTube recovery pass 2
 
 on:
   push:
-    branches:
-      - chatgpt-tmp-yt-dlp-20260819
-    paths:
-      - .github/workflows/chatgpt-yt-recovery-pass2.yml
+    branches: [chatgpt-tmp-yt-dlp-20260819]
+    paths: [.github/workflows/chatgpt-yt-recovery-pass2.yml]
   pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/chatgpt-yt-recovery-pass2.yml
+    branches: [main]
+    paths: [.github/workflows/chatgpt-yt-recovery-pass2.yml]
 
 permissions:
   contents: read
@@ -18,9 +14,9 @@ permissions:
 jobs:
   recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - name: Build evidence bundle
+      - name: Build evidence bundle in parallel
         shell: bash
         run: |
           set -euo pipefail
@@ -71,13 +67,13 @@ jobs:
           EOF
 
           python3 - <<'PY'
-          import json, pathlib, time, urllib.parse, urllib.request, urllib.error
+          import concurrent.futures, json, pathlib, urllib.parse, urllib.request, urllib.error, time
 
-          ids = [x.strip() for x in pathlib.Path('ids.txt').read_text().splitlines() if x.strip()]
-          ua = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
+          IDS = [x.strip() for x in pathlib.Path('ids.txt').read_text().splitlines() if x.strip()]
+          UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
 
-          def fetch(url, timeout=45):
-              req = urllib.request.Request(url, headers={'User-Agent': ua, 'Accept': '*/*'})
+          def fetch(url, timeout):
+              req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': '*/*'})
               try:
                   with urllib.request.urlopen(req, timeout=timeout) as r:
                       return r.status, r.headers.get('content-type',''), r.read()
@@ -88,35 +84,22 @@ jobs:
               except Exception as e:
                   return 0, '', str(e).encode()
 
-          summary = []
-          for n, vid in enumerate(ids, 1):
+          def one(vid):
               row = {'id': vid}
-              print(f'[{n}/{len(ids)}] {vid}', flush=True)
+              watch = f'https://www.youtube.com/watch?v={vid}'
 
-              finder = f'https://findyoutubevideo.thetechrobo.ca/api/v5/{vid}?includeRaw=true'
-              status, ctype, body = fetch(finder, 90)
+              status, ctype, body = fetch(f'https://findyoutubevideo.thetechrobo.ca/api/v5/{vid}?includeRaw=true', 120)
               pathlib.Path(f'evidence/finder/{vid}.json').write_bytes(body)
               row['finder_status'] = status
               try:
                   data = json.loads(body)
                   row['finder_verdict'] = data.get('verdict')
-                  row['finder_services'] = [
-                      {
-                          'name': k.get('name'), 'archived': k.get('archived'),
-                          'metaonly': k.get('metaonly'), 'error': k.get('error'),
-                          'available': k.get('available'), 'rawraw': k.get('rawraw')
-                      } for k in data.get('keys', [])
-                  ]
+                  row['finder_services'] = data.get('keys', [])
               except Exception as e:
                   row['finder_parse_error'] = str(e)
 
-              watch = f'https://www.youtube.com/watch?v={vid}'
-              params = [('url', watch), ('output', 'json'), ('filter', 'statuscode:200'),
-                        ('filter', 'mimetype:text/html'),
-                        ('fl', 'timestamp,original,statuscode,mimetype,digest'),
-                        ('collapse', 'digest'), ('limit', '50')]
-              cdx = 'https://web.archive.org/cdx/search/cdx?' + urllib.parse.urlencode(params)
-              status, ctype, body = fetch(cdx, 60)
+              params = [('url', watch), ('output', 'json'), ('fl', 'timestamp,original,statuscode,mimetype,digest'), ('collapse', 'digest'), ('limit', '30')]
+              status, ctype, body = fetch('https://web.archive.org/cdx/search/cdx?' + urllib.parse.urlencode(params), 45)
               pathlib.Path(f'evidence/wayback/{vid}.json').write_bytes(body)
               row['wayback_cdx_status'] = status
               try:
@@ -126,15 +109,12 @@ jobs:
               except Exception as e:
                   row['wayback_parse_error'] = str(e)
 
-              ghost = 'https://ghostarchive.org/search?' + urllib.parse.urlencode({'term': watch})
-              status, ctype, body = fetch(ghost, 60)
+              status, ctype, body = fetch('https://ghostarchive.org/search?' + urllib.parse.urlencode({'term': watch}), 45)
               pathlib.Path(f'evidence/ghostarchive/{vid}.html').write_bytes(body)
               row['ghost_status'] = status
-              text = body.decode('utf-8', 'ignore')
-              row['ghost_mentions_id'] = vid in text
+              row['ghost_mentions_id'] = vid in body.decode('utf-8','ignore')
 
-              oembed = 'https://www.youtube.com/oembed?' + urllib.parse.urlencode({'url': watch, 'format': 'json'})
-              status, ctype, body = fetch(oembed, 30)
+              status, ctype, body = fetch('https://www.youtube.com/oembed?' + urllib.parse.urlencode({'url': watch, 'format': 'json'}), 25)
               pathlib.Path(f'evidence/oembed/{vid}.json').write_bytes(body)
               row['oembed_status'] = status
               try:
@@ -143,28 +123,37 @@ jobs:
                   row['oembed_author_name'] = od.get('author_name')
               except Exception:
                   pass
+              return row
 
-              summary.append(row)
-              pathlib.Path('summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-              time.sleep(0.35)
+          results = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              futs = {ex.submit(one, vid): vid for vid in IDS}
+              for i, fut in enumerate(concurrent.futures.as_completed(futs), 1):
+                  vid = futs[fut]
+                  try:
+                      row = fut.result()
+                  except Exception as e:
+                      row = {'id': vid, 'fatal_error': repr(e)}
+                  results.append(row)
+                  print(f'[{i}/{len(IDS)}] finished {vid}', flush=True)
 
-          pathlib.Path('summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+          order = {v:i for i,v in enumerate(IDS)}
+          results.sort(key=lambda r: order[r['id']])
+          pathlib.Path('summary.json').write_text(json.dumps(results, indent=2, ensure_ascii=False))
 
           lines = ['id\tfinder_http\thas_video\tmetaonly\tcomments\twayback_count\tghost_mentions\toembed_title']
-          for r in summary:
+          for r in results:
               v = r.get('finder_verdict') or {}
               title = (r.get('oembed_title') or '').replace('\t',' ').replace('\n',' ')
               lines.append('\t'.join(map(str,[r['id'],r.get('finder_status',''),v.get('has_video',''),v.get('metaonly',''),v.get('comments',''),r.get('wayback_capture_count_returned',''),r.get('ghost_mentions_id',''),title])))
           pathlib.Path('summary.tsv').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
           PY
-
-          echo '=== SUMMARY TSV ==='
-          cat summary.tsv
 
       - name: Upload evidence bundle
         uses: actions/upload-artifact@v4
         with:
-          name: chatgpt-youtube-recovery-pass2
+          name: chatgpt-youtube-recovery-pass2-parallel
           path: |
             ids.txt
             summary.json
