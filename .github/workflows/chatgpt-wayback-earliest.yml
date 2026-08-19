@@ -1,0 +1,69 @@
+name: ChatGPT Wayback earliest three
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-wayback-earliest.yml
+
+permissions:
+  contents: read
+
+jobs:
+  earliest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Query exact earliest endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for id in 9R_VzlxPyzA KsWhXozSi2g PQJ8y--y16k; do
+            echo "===== $id =====" | tee -a out/summary.txt
+            echo "-- Filmot Title Restorer exact earliest fakeurl query --" | tee -a out/summary.txt
+            curl -L --retry 2 --max-time 25 -A 'Mozilla/5.0' "https://web.archive.org/cdx/search/cdx?url=wayback-fakeurl.archive.org/yt/$id&fl=timestamp,original,statuscode,mimetype,digest,length&output=json&closest=20050101000000&limit=10" | tee "out/${id}_fakeurl.json" | tee -a out/summary.txt || true
+            echo | tee -a out/summary.txt
+            echo "-- earliest normal HTTPS watch capture --" | tee -a out/summary.txt
+            curl -L --retry 2 --max-time 25 -A 'Mozilla/5.0' --get 'https://web.archive.org/cdx/search/cdx' --data-urlencode "url=https://www.youtube.com/watch?v=$id" --data-urlencode 'output=json' --data-urlencode 'fl=timestamp,original,statuscode,mimetype,digest,length' --data-urlencode 'filter=statuscode:200' --data-urlencode 'limit=10' | tee "out/${id}_watch_https.json" | tee -a out/summary.txt || true
+            echo | tee -a out/summary.txt
+            echo "-- earliest normal HTTP watch capture --" | tee -a out/summary.txt
+            curl -L --retry 2 --max-time 25 -A 'Mozilla/5.0' --get 'https://web.archive.org/cdx/search/cdx' --data-urlencode "url=http://www.youtube.com/watch?v=$id" --data-urlencode 'output=json' --data-urlencode 'fl=timestamp,original,statuscode,mimetype,digest,length' --data-urlencode 'filter=statuscode:200' --data-urlencode 'limit=10' | tee "out/${id}_watch_http.json" | tee -a out/summary.txt || true
+            echo | tee -a out/summary.txt
+          done
+      - name: Fetch first returned watch snapshots and extract title signals
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,subprocess,re,html
+          ids=['9R_VzlxPyzA','KsWhXozSi2g','PQJ8y--y16k']
+          lines=[]
+          for vid in ids:
+            for suffix in ['watch_https','watch_http']:
+              p=pathlib.Path(f'out/{vid}_{suffix}.json')
+              try: a=json.loads(p.read_text())
+              except Exception: continue
+              if not isinstance(a,list) or len(a)<2: continue
+              for row in a[1:4]:
+                ts,orig=row[0],row[1]
+                u=f'https://web.archive.org/web/{ts}id_/{orig}'
+                try:
+                  b=subprocess.run(['curl','-L','--retry','1','--max-time','25','-A','Mozilla/5.0',u],capture_output=True).stdout
+                except Exception: b=b''
+                text=b.decode('utf-8','ignore')
+                sig=[]
+                pats=[('title',r'<title[^>]*>(.*?)</title>'),('og:title',r'<meta[^>]+(?:property|name)=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']'),('meta:title',r'<meta[^>]+name=["\']title["\'][^>]+content=["\']([^"\']+)["\']'),('eow-title',r'id=["\']eow-title["\'][^>]+title=["\']([^"\']+)["\']')]
+                for label,pat in pats:
+                  m=re.search(pat,text,re.I|re.S)
+                  if m: sig.append([label,html.unescape(re.sub(r'\s+',' ',m.group(1))).strip()])
+                lines.append({'id':vid,'timestamp':ts,'original':orig,'replay':u,'bytes':len(b),'signals':sig})
+                pathlib.Path(f'out/{vid}_{ts}.html').write_bytes(b[:2000000])
+          pathlib.Path('out/first_snapshot_signals.json').write_text(json.dumps(lines,indent=2,ensure_ascii=False))
+          print(json.dumps(lines,indent=2,ensure_ascii=False))
+          PY
+      - name: Upload earliest evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-wayback-earliest-three
+          path: out/
+          retention-days: 3
