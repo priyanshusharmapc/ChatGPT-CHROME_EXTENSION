@@ -1,0 +1,49 @@
+name: ChatGPT PQJ archived thumbnail
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-pqj-thumb.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-thumb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch exact archived thumbnail
+        shell: bash
+        run: |
+          set -u
+          mkdir -p out
+          id='PQJ8y--y16k'
+          ts='20250809001931'
+          orig='https://i.ytimg.com/vi/PQJ8y--y16k/hqdefault.jpg?sqp=-oaymwEjCOADEI4CSFryq4qpAxUIARUAAAAAGAElAADIQj0AgKJDeAE%3D&rs=AOn4CLC97tN3jw4lXjeQhs7znwx3Mn8nKA'
+          printf '%s\n' "$orig" > out/original_url.txt
+          modes=(id_ im_ oe_ if_ '')
+          n=0
+          for mode in "${modes[@]}"; do
+            n=$((n+1))
+            url="https://web.archive.org/web/${ts}${mode}/${orig}"
+            echo "TRY $n $url" | tee -a out/log.txt
+            curl -L --retry 4 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 90 -A 'Mozilla/5.0' -D "out/headers_${n}.txt" -o "out/body_${n}.bin" -w 'http=%{http_code} type=%{content_type} bytes=%{size_download} final=%{url_effective}\n' "$url" 2>&1 | tee -a out/log.txt || true
+            file "out/body_${n}.bin" | tee -a out/log.txt || true
+          done
+          echo '--- CDX all thumbnail variants ---' | tee -a out/log.txt
+          for host in i.ytimg.com img.youtube.com i1.ytimg.com i2.ytimg.com i3.ytimg.com i4.ytimg.com; do
+            curl -L --retry 3 --retry-all-errors --max-time 60 -A 'Mozilla/5.0' --get 'https://web.archive.org/cdx/search/cdx' \
+              --data-urlencode "url=${host}/vi/${id}/*" --data-urlencode 'matchType=prefix' --data-urlencode 'output=json' \
+              --data-urlencode 'fl=timestamp,original,statuscode,mimetype,digest,length' --data-urlencode 'filter=statuscode:200' --data-urlencode 'limit=200' \
+              >> out/all_thumb_cdx.txt 2>>out/log.txt || true
+            echo >> out/all_thumb_cdx.txt
+          done
+          cat out/all_thumb_cdx.txt | tee -a out/log.txt
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-pqj-archived-thumbnail
+          path: out/
+          retention-days: 3
