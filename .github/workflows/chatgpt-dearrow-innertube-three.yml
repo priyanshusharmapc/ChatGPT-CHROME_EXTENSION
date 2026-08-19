@@ -1,0 +1,91 @@
+name: ChatGPT DeArrow Innertube recovery three
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-dearrow-innertube-three.yml
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query DeArrow SponsorBlock and YouTube internals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import requests,json,re,pathlib,urllib.parse
+          ids=['9R_VzlxPyzA','KsWhXozSi2g','PQJ8y--y16k']
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'})
+          out={}
+          def get(url,**kw):
+              try:
+                  r=S.get(url,timeout=20,allow_redirects=True,**kw)
+                  return r
+              except Exception as e: return e
+          def post(url,**kw):
+              try:
+                  r=S.post(url,timeout=20,**kw)
+                  return r
+              except Exception as e: return e
+          def jrec(r):
+              if isinstance(r,Exception): return {'error':repr(r)}
+              z={'status':r.status_code,'url':r.url,'content_type':r.headers.get('content-type')}
+              try:z['json']=r.json()
+              except Exception:z['text']=r.text[:12000]
+              return z
+          def parse_yt_page(text):
+              sig={}
+              for key,pat in {
+                  'api_key':r'"INNERTUBE_API_KEY":"([^"]+)',
+                  'client_version':r'"INNERTUBE_CLIENT_VERSION":"([^"]+)',
+                  'client_name_num':r'"INNERTUBE_CONTEXT_CLIENT_NAME":(\d+)',
+                  'video_title':r'"videoDetails":\{[^{}]{0,5000}?"title":"((?:\\.|[^"])*)"',
+                  'micro_title':r'"microformat":\{.*?"title":"((?:\\.|[^"])*)"',
+                  'reason':r'"reason":"((?:\\.|[^"])*)"',
+                  'status':r'"playabilityStatus":\{"status":"([A-Z_]+)"'
+              }.items():
+                  m=re.search(pat,text,re.S)
+                  if m:
+                      try:sig[key]=json.loads('"'+m.group(1)+'"') if 'title' in key or key=='reason' else m.group(1)
+                      except Exception:sig[key]=m.group(1)
+              return sig
+          for vid in ids:
+              z={}
+              z['dearrow']=jrec(get('https://sponsor.ajay.app/api/branding?'+urllib.parse.urlencode({'videoID':vid})))
+              cats=json.dumps(['sponsor','intro','outro','selfpromo','interaction','music_offtopic','preview','filler'])
+              z['sponsorblock']=jrec(get('https://sponsor.ajay.app/api/skipSegments?'+urllib.parse.urlencode({'videoID':vid,'categories':cats})))
+              for surface,base in [('youtube','https://www.youtube.com/watch?v='),('music','https://music.youtube.com/watch?v=')]:
+                  r=get(base+vid)
+                  if isinstance(r,Exception):
+                      z[surface]={'error':repr(r)}; continue
+                  page={'status':r.status_code,'final_url':r.url,'signals':parse_yt_page(r.text),'bytes':len(r.content)}
+                  pathlib.Path(f'{vid}_{surface}.html').write_text(r.text,errors='ignore')
+                  z[surface]=page
+                  key=page['signals'].get('api_key')
+                  ver=page['signals'].get('client_version')
+                  name_num=page['signals'].get('client_name_num')
+                  if key and ver:
+                      client_name='WEB_REMIX' if surface=='music' else 'WEB'
+                      payload={'context':{'client':{'clientName':client_name,'clientVersion':ver,'hl':'en','gl':'US'}},'videoId':vid,'contentCheckOk':True,'racyCheckOk':True}
+                      rr=post('https://www.youtube.com/youtubei/v1/player?key='+key+'&prettyPrint=false',json=payload,headers={'Content-Type':'application/json','Origin':'https://music.youtube.com' if surface=='music' else 'https://www.youtube.com'})
+                      z[surface+'_player']=jrec(rr)
+              out[vid]=z
+          pathlib.Path('summary.json').write_text(json.dumps(out,indent=2,ensure_ascii=False))
+          print(json.dumps(out,indent=2,ensure_ascii=False)[:80000])
+          PY
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-dearrow-innertube-three
+          path: |
+            summary.json
+            *_youtube.html
+            *_music.html
+          retention-days: 3
+          if-no-files-found: error
