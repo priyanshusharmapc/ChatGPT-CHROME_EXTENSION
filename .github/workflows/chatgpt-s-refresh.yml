@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - chatgpt-tmp-s-refresh-20260819
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
