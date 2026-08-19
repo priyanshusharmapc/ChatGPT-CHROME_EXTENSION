@@ -1,0 +1,74 @@
+name: ChatGPT final deleted-video databases
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-final-database-lookups.yml
+
+permissions:
+  contents: read
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Query Filmot and inspect QuiteAPlaylist
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q requests beautifulsoup4
+          python3 - <<'PY'
+          import requests,re,json,urllib.parse
+          from bs4 import BeautifulSoup
+          VID='9R_VzlxPyzA'
+          PL='PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G'
+          S=requests.Session();S.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'})
+          def show(label,url,timeout=40):
+              print('\n===',label,'===',url)
+              try:
+                  r=S.get(url,timeout=timeout,allow_redirects=True)
+                  print('STATUS',r.status_code,'FINAL',r.url,'TYPE',r.headers.get('content-type'),'LEN',len(r.content))
+                  print(r.text[:100000])
+                  return r
+              except Exception as e:
+                  print('ERR',repr(e)); return None
+
+          show('FILMOT API','https://filmot.com/api/getvideos?key=md5paNgdbaeudounjp39&id='+VID)
+          show('FILMOT API BATCH','https://filmot.com/api/getvideos?key=md5paNgdbaeudounjp39&id='+VID+',y9pELY1qWzM,yH5FRHt2kic,3Hudiu2ixAY')
+          show('FILMOT VIDEO PAGE','https://filmot.com/video/'+VID)
+          show('FILMOT THUMB','https://filmot.com/vi/'+VID+'/default.jpg')
+
+          # QuiteAPlaylist single-video and playlist search pages
+          targets=[
+              'https://quiteaplaylist.com/search?url='+urllib.parse.quote('https://www.youtube.com/watch?v='+VID,safe=''),
+              'https://quiteaplaylist.com/search?url='+urllib.parse.quote('https://www.youtube.com/playlist?list='+PL,safe=''),
+              'https://quiteaplaylist.com/',
+          ]
+          js_urls=[]
+          for i,u in enumerate(targets):
+              r=show('QAP PAGE '+str(i),u)
+              if r:
+                  soup=BeautifulSoup(r.text,'html.parser')
+                  for s in soup.find_all('script'):
+                      src=s.get('src')
+                      if src:
+                          js_urls.append(urllib.parse.urljoin(r.url,src))
+          js_urls=list(dict.fromkeys(js_urls))
+          print('\nQAP JS URLS',js_urls)
+          for u in js_urls:
+              try:
+                  r=S.get(u,timeout=30)
+                  txt=r.text
+                  print('\n=== QAP JS',u,'STATUS',r.status_code,'LEN',len(txt),'===')
+                  # Print contexts around backend/API/search tokens
+                  for needle in ['filmot','api/','getvideos','archive.org','fetch(','axios','search?url','deleted','private','videoId','playlistId']:
+                      pos=0;n=0
+                      while True:
+                          j=txt.lower().find(needle.lower(),pos)
+                          if j<0 or n>=20: break
+                          print('CTX',needle, re.sub(r'\s+',' ',txt[max(0,j-1000):j+2500])[:5000])
+                          pos=j+len(needle);n+=1
+              except Exception as e:print('JSERR',u,repr(e))
+          PY

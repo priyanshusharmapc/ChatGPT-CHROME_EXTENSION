@@ -1,0 +1,47 @@
+name: ChatGPT OLAK fast resolver
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-olak-fast.yml
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Resolve playlist quickly
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q -U yt-dlp requests
+          PL='OLAK5uy_mR76ERZKJKbFrYI8YmLvJ2r_OUPrBL458'
+          VID='9R_VzlxPyzA'
+          echo '=== YT-DLP MUSIC PLAYLIST ==='
+          yt-dlp --flat-playlist --dump-json "https://music.youtube.com/playlist?list=$PL" 2>&1 | head -c 200000 || true
+          echo
+          echo '=== YT-DLP YOUTUBE PLAYLIST ==='
+          yt-dlp --flat-playlist --dump-json "https://www.youtube.com/playlist?list=$PL" 2>&1 | head -c 200000 || true
+          echo
+          echo '=== DIRECT PAGE SIGNALS ==='
+          python3 - <<'PY'
+          import requests,re,json
+          PL='OLAK5uy_mR76ERZKJKbFrYI8YmLvJ2r_OUPrBL458'; VID='9R_VzlxPyzA'
+          S=requests.Session();S.headers['User-Agent']='Mozilla/5.0'
+          for u in [f'https://music.youtube.com/playlist?list={PL}',f'https://www.youtube.com/playlist?list={PL}',f'https://music.youtube.com/watch?v={VID}&list={PL}']:
+              try:
+                  r=S.get(u,timeout=25); t=r.text
+                  print('\nURL',u,'status',r.status_code,'len',len(t))
+                  for pat in [r'<title>(.*?)</title>',r'"title":"((?:\\.|[^"])*)"',r'"videoId":"([^"]+)"',r'"playlistId":"([^"]+)"',r'"browseId":"([^"]+)"']:
+                      vals=[]
+                      for m in re.finditer(pat,t,re.S):
+                          v=m.group(1)
+                          if v not in vals: vals.append(v)
+                          if len(vals)>=50: break
+                      print(pat, vals[:50])
+              except Exception as e: print('ERR',repr(e))
+          PY
