@@ -1,0 +1,89 @@
+name: chatgpt-temp-ytdlp-playlists
+
+on:
+  push:
+    branches:
+      - chatgpt-tmp-yt-dlp-20260819
+    paths:
+      - .github/workflows/chatgpt-tmp-ytdlp-playlists.yml
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install yt-dlp
+        run: python -m pip install --upgrade yt-dlp
+
+      - name: Extract both playlists twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          P1='https://www.youtube.com/playlist?list=PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G'
+          P2='https://www.youtube.com/playlist?list=PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx'
+
+          yt-dlp --flat-playlist --ignore-errors --dump-single-json "$P1" > p1-full.json
+          yt-dlp --flat-playlist --ignore-errors --dump-single-json --compat-options no-youtube-unavailable-videos "$P1" > p1-available.json
+          yt-dlp --flat-playlist --ignore-errors --dump-single-json "$P2" > p2-full.json
+          yt-dlp --flat-playlist --ignore-errors --dump-single-json --compat-options no-youtube-unavailable-videos "$P2" > p2-available.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          def load(path):
+              return json.loads(Path(path).read_text(encoding='utf-8'))
+
+          def clean_entry(e, pos):
+              if not e:
+                  return {'position': pos, 'id': None, 'title': None, 'availability': None, 'url': None}
+              vid = e.get('id')
+              return {
+                  'position': e.get('playlist_index') or pos,
+                  'id': vid,
+                  'title': e.get('title'),
+                  'availability': e.get('availability'),
+                  'url': f'https://www.youtube.com/watch?v={vid}' if vid else e.get('url'),
+              }
+
+          out = {}
+          for key in ('p1','p2'):
+              full = load(f'{key}-full.json')
+              avail = load(f'{key}-available.json')
+              full_entries = [clean_entry(e, i) for i, e in enumerate(full.get('entries') or [], 1)]
+              avail_entries = [clean_entry(e, i) for i, e in enumerate(avail.get('entries') or [], 1)]
+              avail_ids = {e['id'] for e in avail_entries if e.get('id')}
+              unavailable = [e for e in full_entries if e.get('id') and e['id'] not in avail_ids]
+              out[key] = {
+                  'playlist_id': full.get('id'),
+                  'playlist_title': full.get('title'),
+                  'full_count': len(full_entries),
+                  'available_count': len(avail_entries),
+                  'unavailable_count': len(unavailable),
+                  'full': full_entries,
+                  'available': avail_entries,
+                  'unavailable': unavailable,
+              }
+          Path('chatgpt-ytdlp-results.json').write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding='utf-8')
+          print(json.dumps({k:{'title':v['playlist_title'],'full':v['full_count'],'available':v['available_count'],'unavailable':v['unavailable_count']} for k,v in out.items()}, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Commit extraction result to temp branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init
+          git config user.name 'chatgpt-temp-bot'
+          git config user.email 'chatgpt-temp-bot@users.noreply.github.com'
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch origin chatgpt-tmp-yt-dlp-20260819 --depth=1
+          git checkout -B chatgpt-tmp-yt-dlp-20260819 FETCH_HEAD
+          cp "$GITHUB_WORKSPACE/chatgpt-ytdlp-results.json" ./chatgpt-ytdlp-results.json
+          git add chatgpt-ytdlp-results.json
+          git commit -m 'Temporary yt-dlp extraction results' || true
+          git push origin HEAD:chatgpt-tmp-yt-dlp-20260819
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
