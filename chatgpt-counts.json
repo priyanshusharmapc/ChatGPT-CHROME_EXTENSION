@@ -4,13 +4,15 @@
     "playlist_title": "SONGS",
     "full_count": 1713,
     "available_count": 1574,
-    "unavailable_count": 139
+    "unavailable_count": 139,
+    "missing_title_count": 66
   },
   "p2": {
     "playlist_id": "PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx",
     "playlist_title": "S",
     "full_count": 253,
     "available_count": 246,
-    "unavailable_count": 7
+    "unavailable_count": 7,
+    "missing_title_count": 0
   }
 }
