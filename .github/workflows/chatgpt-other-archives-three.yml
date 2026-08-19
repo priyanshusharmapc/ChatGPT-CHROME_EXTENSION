@@ -1,0 +1,153 @@
+name: ChatGPT alternate archives three
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-other-archives-three.yml
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Query alternate archives and indexes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q -U yt-dlp requests
+          mkdir -p out/{arquivo,youtube,invidious,search}
+          cat > ids.txt <<'EOF'
+          9R_VzlxPyzA
+          KsWhXozSi2g
+          PQJ8y--y16k
+          EOF
+
+          # Search YouTube's own search index for literal IDs and playlist metadata.
+          while read -r id; do
+            yt-dlp --flat-playlist --dump-json "ytsearch100:${id}" > "out/youtube/${id}_idsearch.jsonl" 2> "out/youtube/${id}_idsearch.err" || true
+            yt-dlp --flat-playlist --dump-json "ytsearch100:watch?v=${id}" > "out/youtube/${id}_urlsearch.jsonl" 2> "out/youtube/${id}_urlsearch.err" || true
+          done < ids.txt
+          yt-dlp --flat-playlist --dump-json 'https://www.youtube.com/playlist?list=PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G' > out/youtube/playlist.jsonl 2> out/youtube/playlist.err || true
+
+          python3 - <<'PY'
+          import requests, json, pathlib, urllib.parse, re, time
+          ids=[x.strip() for x in pathlib.Path('ids.txt').read_text().splitlines() if x.strip()]
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 archival-research/1.0'})
+          summary={i:{} for i in ids}
+          def fetch(url,timeout=30):
+              try:
+                  r=S.get(url,timeout=timeout,allow_redirects=True)
+                  return {'status':r.status_code,'url':r.url,'text':r.text[:100000]},r
+              except Exception as e:
+                  return {'error':repr(e),'url':url},None
+
+          # Arquivo.pt official APIs, independent web archive.
+          for vid in ids:
+              watch=f'https://www.youtube.com/watch?v={vid}'
+              variants=[watch,f'http://www.youtube.com/watch?v={vid}',f'https://youtu.be/{vid}',f'https://www.youtube.com/embed/{vid}']
+              ar={'cdx':[],'version_history':[],'text_search':None,'image_search':None,'thumb_cdx':[]}
+              for v in variants:
+                  u='https://arquivo.pt/wayback/cdx?'+urllib.parse.urlencode({'url':v,'output':'json','limit':'200'})
+                  rec,r=fetch(u)
+                  ar['cdx'].append({'query':v,'response':rec})
+                  pathlib.Path(f'out/arquivo/{vid}_cdx_{len(ar["cdx"])}.txt').write_text(rec.get('text',''),errors='ignore')
+                  u='https://arquivo.pt/textsearch?'+urllib.parse.urlencode({'versionHistory':v,'maxItems':'50','fields':'originalURL,tstamp,title,linkToArchive'})
+                  rec,r=fetch(u)
+                  ar['version_history'].append({'query':v,'response':rec})
+                  pathlib.Path(f'out/arquivo/{vid}_vh_{len(ar["version_history"])}.txt').write_text(rec.get('text',''),errors='ignore')
+              u='https://arquivo.pt/textsearch?'+urllib.parse.urlencode({'q':vid,'maxItems':'50'})
+              rec,r=fetch(u); ar['text_search']=rec
+              pathlib.Path(f'out/arquivo/{vid}_textsearch.txt').write_text(rec.get('text',''),errors='ignore')
+              u='https://arquivo.pt/imagesearch?'+urllib.parse.urlencode({'q':vid,'maxItems':'50'})
+              rec,r=fetch(u); ar['image_search']=rec
+              pathlib.Path(f'out/arquivo/{vid}_imagesearch.txt').write_text(rec.get('text',''),errors='ignore')
+              for host in ['i.ytimg.com','img.youtube.com','i1.ytimg.com','i2.ytimg.com','i3.ytimg.com','i4.ytimg.com']:
+                  u='https://arquivo.pt/wayback/cdx?'+urllib.parse.urlencode({'url':f'https://{host}/vi/{vid}/*','output':'json','limit':'200'})
+                  rec,r=fetch(u); ar['thumb_cdx'].append({'host':host,'response':rec})
+              summary[vid]['arquivo']=ar
+
+          # Public Invidious instances may retain indexed search references even if watch page is gone.
+          inst=[]
+          rec,r=fetch('https://api.invidious.io/instances.json')
+          if r and r.status_code==200:
+              try:
+                  raw=r.json()
+                  for host,meta in raw:
+                      if meta.get('api') and meta.get('type')=='https' and not meta.get('monitor',{}).get('down'):
+                          inst.append('https://'+host)
+              except Exception: pass
+          inst=inst[:15]
+          for vid in ids:
+              hits=[]
+              for base in inst:
+                  u=base+'/api/v1/search?'+urllib.parse.urlencode({'q':vid,'type':'video','sort_by':'relevance'})
+                  rec,r=fetch(u,timeout=12)
+                  if r and r.status_code==200:
+                      try:
+                          data=r.json()
+                          matches=[x for x in data if vid in json.dumps(x,ensure_ascii=False)]
+                          if matches: hits.append({'instance':base,'matches':matches[:20]})
+                      except Exception: pass
+              summary[vid]['invidious_hits']=hits
+              pathlib.Path(f'out/invidious/{vid}.json').write_text(json.dumps(hits,indent=2,ensure_ascii=False))
+
+          # Direct search-engine HTML as another index family. Keep snippets containing the ID.
+          engines={
+              'duckduckgo':'https://html.duckduckgo.com/html/?q={q}',
+              'yahoo':'https://search.yahoo.com/search?p={q}',
+              'mojeek':'https://www.mojeek.com/search?q={q}',
+          }
+          for vid in ids:
+              eh={}
+              for name,tpl in engines.items():
+                  q=urllib.parse.quote('"'+vid+'"')
+                  rec,r=fetch(tpl.format(q=q),timeout=20)
+                  text=rec.get('text','')
+                  snippets=[]
+                  for m in re.finditer(re.escape(vid),text,re.I):
+                      snippets.append(re.sub(r'\s+',' ',re.sub('<[^>]+>',' ',text[max(0,m.start()-700):m.end()+700])).strip())
+                  eh[name]={'status':rec.get('status'),'snippets':snippets[:20]}
+                  pathlib.Path(f'out/search/{vid}_{name}.html').write_text(text,errors='ignore')
+              summary[vid]['engine_hits']=eh
+
+          # Extract target rows and all exposed flat-playlist fields.
+          target={}
+          for line in pathlib.Path('out/youtube/playlist.jsonl').read_text(errors='ignore').splitlines():
+              try:
+                  j=json.loads(line)
+              except Exception: continue
+              if j.get('id') in ids:
+                  target[j['id']]=j
+          summary['_playlist_target_rows']=target
+
+          # Compact literal-ID YouTube search results.
+          ys={}
+          for vid in ids:
+              rows=[]
+              for suffix in ['idsearch','urlsearch']:
+                  p=pathlib.Path(f'out/youtube/{vid}_{suffix}.jsonl')
+                  for line in p.read_text(errors='ignore').splitlines():
+                      try:
+                          j=json.loads(line)
+                          rows.append({k:j.get(k) for k in ['id','title','url','channel','channel_id','uploader','uploader_id','duration','description']})
+                      except Exception: pass
+              ys[vid]=rows[:200]
+          summary['_youtube_literal_search']=ys
+          pathlib.Path('summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False))
+          print(json.dumps(summary,indent=2,ensure_ascii=False)[:70000])
+          PY
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-alternate-archives-three
+          path: |
+            ids.txt
+            summary.json
+            out/
+          retention-days: 3
+          if-no-files-found: error
