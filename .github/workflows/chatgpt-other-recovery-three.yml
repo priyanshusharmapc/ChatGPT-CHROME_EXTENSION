@@ -1,0 +1,178 @@
+name: ChatGPT non-Wayback recovery three
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-other-recovery-three.yml
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Run independent recovery methods
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/{youtube,commoncrawl,archiveorg,reddit,mirrors,thumbnails}
+          python3 -m pip install -q -U yt-dlp requests
+
+          # Live YouTube search and current channel inventory
+          yt-dlp --flat-playlist --dump-json 'https://www.youtube.com/channel/UCxXCWkeERz3EeAw3sN5teRw/videos' > evidence/youtube/tanoc_fes_channel.jsonl 2> evidence/youtube/tanoc_fes_channel.err || true
+          yt-dlp --flat-playlist --dump-json 'ytsearch50:TANO*C FES Knight Rider USAO' > evidence/youtube/search_tanoc_knight_rider.jsonl 2> evidence/youtube/search_tanoc_knight_rider.err || true
+          yt-dlp --flat-playlist --dump-json 'ytsearch50:BleakX poster boy 降调版' > evidence/youtube/search_bleakx_poster_boy.jsonl 2> evidence/youtube/search_bleakx_poster_boy.err || true
+          yt-dlp --flat-playlist --dump-json 'ytsearch50:ZXKAI slxughter NO BATIDÃO' > evidence/youtube/search_no_batidao.jsonl 2> evidence/youtube/search_no_batidao.err || true
+
+          python3 - <<'PY'
+          import requests, json, pathlib, re, gzip, io, urllib.parse, time
+          from html import unescape
+
+          ids=['9R_VzlxPyzA','KsWhXozSi2g','PQJ8y--y16k']
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 recovery-research/1.0'})
+          root=pathlib.Path('evidence')
+          summary={i:{} for i in ids}
+
+          def get(url, timeout=25, **kw):
+              try:
+                  r=S.get(url,timeout=timeout,allow_redirects=True,**kw)
+                  return r
+              except Exception as e:
+                  return e
+
+          def title_signals(text):
+              out=[]
+              pats=[
+                  r'<title[^>]*>(.*?)</title>',
+                  r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']',
+                  r'<meta[^>]+name=["\']title["\'][^>]+content=["\'](.*?)["\']',
+                  r'<h1[^>]*>(.*?)</h1>'
+              ]
+              for p in pats:
+                  for m in re.findall(p,text,re.I|re.S):
+                      v=re.sub('<[^>]+>',' ',unescape(m)); v=re.sub(r'\s+',' ',v).strip()
+                      if v and v not in out: out.append(v)
+              return out[:20]
+
+          # Direct third-party pages that sometimes retain historical titles.
+          mirror_templates={
+              'socialcounts':'https://socialcounts.org/youtube-video-live-view-count/{id}',
+              'kworb':'https://kworb.net/youtube/video/{id}.html',
+              'filmot':'https://filmot.com/video/{id}',
+              'noembed':'https://noembed.com/embed?url=https://www.youtube.com/watch?v={id}',
+          }
+          for vid in ids:
+              for name,tpl in mirror_templates.items():
+                  url=tpl.format(id=vid); r=get(url)
+                  rec={'url':url}
+                  if isinstance(r,Exception): rec['error']=repr(r)
+                  else:
+                      rec.update({'status':r.status_code,'final_url':r.url,'signals':title_signals(r.text),'text_prefix':r.text[:2000]})
+                      (root/'mirrors'/f'{vid}_{name}.html').write_text(r.text,errors='ignore')
+                  summary[vid][name]=rec
+
+              # Internet Archive metadata full-text search, not Wayback snapshots.
+              q=f'"{vid}"'
+              url='https://archive.org/advancedsearch.php?'+urllib.parse.urlencode({'q':q,'fl[]':['identifier','title','description','creator','date'],'rows':50,'output':'json'},doseq=True)
+              r=get(url)
+              if isinstance(r,Exception): data={'error':repr(r)}
+              else:
+                  try: data=r.json()
+                  except Exception: data={'status':r.status_code,'text':r.text[:5000]}
+              (root/'archiveorg'/f'{vid}.json').write_text(json.dumps(data,indent=2,ensure_ascii=False))
+              summary[vid]['archiveorg_docs']=(data.get('response',{}).get('docs',[]) if isinstance(data,dict) else [])
+
+              # Reddit search JSON.
+              url='https://www.reddit.com/search.json?'+urllib.parse.urlencode({'q':vid,'limit':100,'sort':'new','t':'all'})
+              r=get(url)
+              if isinstance(r,Exception): data={'error':repr(r)}
+              else:
+                  try: data=r.json()
+                  except Exception: data={'status':r.status_code,'text':r.text[:5000]}
+              (root/'reddit'/f'{vid}.json').write_text(json.dumps(data,indent=2,ensure_ascii=False))
+              children=(data.get('data',{}).get('children',[]) if isinstance(data,dict) else [])
+              summary[vid]['reddit_hits']=[{'title':x.get('data',{}).get('title'),'permalink':x.get('data',{}).get('permalink'),'selftext':x.get('data',{}).get('selftext','')[:500]} for x in children[:20]]
+
+              # Current thumbnail endpoints. Preserve any non-placeholder image.
+              for qname in ['maxresdefault.jpg','hqdefault.jpg','mqdefault.jpg','default.jpg']:
+                  url=f'https://i.ytimg.com/vi/{vid}/{qname}'
+                  r=get(url)
+                  if not isinstance(r,Exception) and r.status_code==200 and r.content:
+                      (root/'thumbnails'/f'{vid}_{qname}').write_bytes(r.content)
+                      summary[vid].setdefault('current_thumbnails',[]).append({'quality':qname,'bytes':len(r.content),'content_type':r.headers.get('content-type')})
+
+          # Common Crawl: query recent indexes for exact YouTube URL variants, then fetch first few WARC payloads.
+          ci=get('https://index.commoncrawl.org/collinfo.json')
+          indexes=[]
+          if not isinstance(ci,Exception):
+              try: indexes=[x['id'] for x in ci.json()[:16]]
+              except Exception: pass
+          for vid in ids:
+              cc=[]
+              variants=[
+                  f'https://www.youtube.com/watch?v={vid}',
+                  f'http://www.youtube.com/watch?v={vid}',
+                  f'https://youtu.be/{vid}',
+                  f'https://www.youtube.com/embed/{vid}',
+              ]
+              for idx in indexes:
+                  for target in variants:
+                      api=f'https://index.commoncrawl.org/{idx}-index?'+urllib.parse.urlencode({'url':target,'output':'json','filter':'status:200'})
+                      r=get(api,timeout=15)
+                      if isinstance(r,Exception) or r.status_code!=200 or not r.text.strip(): continue
+                      for line in r.text.splitlines()[:10]:
+                          try: obj=json.loads(line)
+                          except Exception: continue
+                          obj['_index']=idx; obj['_query']=target; cc.append(obj)
+                      if cc: break
+                  if len(cc)>=8: break
+              (root/'commoncrawl'/f'{vid}_index.json').write_text(json.dumps(cc,indent=2,ensure_ascii=False))
+              payloads=[]
+              for n,obj in enumerate(cc[:5]):
+                  try:
+                      off=int(obj['offset']); ln=int(obj['length']); fn=obj['filename']
+                      rr=S.get('https://data.commoncrawl.org/'+fn,headers={'Range':f'bytes={off}-{off+ln-1}'},timeout=30)
+                      raw=rr.content
+                      try: raw=gzip.decompress(raw)
+                      except Exception: pass
+                      txt=raw.decode('utf-8','ignore')
+                      sig=title_signals(txt)
+                      payloads.append({'index':obj.get('_index'),'timestamp':obj.get('timestamp'),'url':obj.get('url'),'signals':sig,'sample':txt[-5000:]})
+                      (root/'commoncrawl'/f'{vid}_payload_{n}.txt').write_text(txt,errors='ignore')
+                  except Exception as e:
+                      payloads.append({'error':repr(e)})
+              summary[vid]['commoncrawl']=payloads
+
+          pathlib.Path('summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False))
+          pathlib.Path('summary.txt').write_text('\n\n'.join(f'### {k}\n'+json.dumps(v,indent=2,ensure_ascii=False) for k,v in summary.items()))
+          PY
+
+          # Compact extraction of live YouTube search results.
+          python3 - <<'PY'
+          import json, pathlib
+          out={}
+          for p in pathlib.Path('evidence/youtube').glob('*.jsonl'):
+              rows=[]
+              for line in p.read_text(errors='ignore').splitlines():
+                  try:
+                      j=json.loads(line); rows.append({k:j.get(k) for k in ['id','title','url','channel','channel_id','uploader','uploader_id','duration','timestamp','upload_date']})
+                  except Exception: pass
+              out[p.name]=rows
+          pathlib.Path('youtube_summary.json').write_text(json.dumps(out,indent=2,ensure_ascii=False))
+          print(json.dumps(out,indent=2,ensure_ascii=False)[:30000])
+          PY
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-other-recovery-three
+          path: |
+            summary.json
+            summary.txt
+            youtube_summary.json
+            evidence/
+          retention-days: 3
+          if-no-files-found: error
