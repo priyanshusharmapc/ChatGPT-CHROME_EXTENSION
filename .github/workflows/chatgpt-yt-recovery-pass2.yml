@@ -6,6 +6,11 @@ on:
       - chatgpt-tmp-yt-dlp-20260819
     paths:
       - .github/workflows/chatgpt-yt-recovery-pass2.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/chatgpt-yt-recovery-pass2.yml
 
 permissions:
   contents: read
@@ -106,11 +111,11 @@ jobs:
                   row['finder_parse_error'] = str(e)
 
               watch = f'https://www.youtube.com/watch?v={vid}'
-              cdx = 'https://web.archive.org/cdx/search/cdx?' + urllib.parse.urlencode({
-                  'url': watch, 'output': 'json', 'filter': 'statuscode:200',
-                  'filter': 'mimetype:text/html', 'fl': 'timestamp,original,statuscode,mimetype,digest',
-                  'collapse': 'digest', 'limit': '50'
-              })
+              params = [('url', watch), ('output', 'json'), ('filter', 'statuscode:200'),
+                        ('filter', 'mimetype:text/html'),
+                        ('fl', 'timestamp,original,statuscode,mimetype,digest'),
+                        ('collapse', 'digest'), ('limit', '50')]
+              cdx = 'https://web.archive.org/cdx/search/cdx?' + urllib.parse.urlencode(params)
               status, ctype, body = fetch(cdx, 60)
               pathlib.Path(f'evidence/wayback/{vid}.json').write_bytes(body)
               row['wayback_cdx_status'] = status
@@ -145,7 +150,6 @@ jobs:
 
           pathlib.Path('summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False))
 
-          # Compact TSV for fast review.
           lines = ['id\tfinder_http\thas_video\tmetaonly\tcomments\twayback_count\tghost_mentions\toembed_title']
           for r in summary:
               v = r.get('finder_verdict') or {}
