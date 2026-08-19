@@ -13,10 +13,10 @@ permissions:
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
-      - name: Install yt-dlp
-        run: python -m pip install --upgrade yt-dlp
+      - name: Install tools
+        run: python -m pip install --upgrade yt-dlp requests beautifulsoup4
 
       - name: Extract both playlists twice and build staging files
         shell: bash
@@ -40,11 +40,7 @@ jobs:
           def clean(e, pos):
               if not e:
                   return {'position': pos, 'id': None, 'title': None}
-              return {
-                  'position': e.get('playlist_index') or pos,
-                  'id': e.get('id'),
-                  'title': e.get('title'),
-              }
+              return {'position': e.get('playlist_index') or pos, 'id': e.get('id'), 'title': e.get('title')}
 
           counts = {}
           for key in ('p1', 'p2'):
@@ -61,32 +57,151 @@ jobs:
                   'full_count': len(full_entries),
                   'available_count': len(avail_entries),
                   'unavailable_count': len(unavailable),
+                  'missing_title_count': sum(1 for e in unavailable if not e.get('title')),
               }
 
-              all_lines = []
-              for e in full_entries:
-                  vid = e.get('id')
-                  if not vid:
-                      continue
-                  title = e.get('title') or '(no title)'
-                  all_lines.append(f"{title} - https://www.youtube.com/watch?v={vid}")
-              Path(f'chatgpt-{key}-all.txt').write_text('\n'.join(all_lines) + '\n', encoding='utf-8')
+              Path(f'chatgpt-{key}-all.txt').write_text('\n'.join(
+                  f"{e.get('title') or '(no title)'} - https://www.youtube.com/watch?v={e['id']}"
+                  for e in full_entries if e.get('id')
+              ) + '\n', encoding='utf-8')
 
-              unavail_lines = []
-              unavail_tsv = ['position\tid\ttitle']
-              for e in unavailable:
-                  vid = e['id']
-                  title = e.get('title') or '(no title)'
-                  unavail_lines.append(f"{title} - https://www.youtube.com/watch?v={vid}")
-                  unavail_tsv.append(f"{e['position']}\t{vid}\t{title}")
-              Path(f'chatgpt-{key}-unavailable.txt').write_text('\n'.join(unavail_lines) + '\n', encoding='utf-8')
-              Path(f'chatgpt-{key}-unavailable.tsv').write_text('\n'.join(unavail_tsv) + '\n', encoding='utf-8')
+              Path(f'chatgpt-{key}-unavailable.txt').write_text('\n'.join(
+                  f"{e.get('title') or '(no title)'} - https://www.youtube.com/watch?v={e['id']}"
+                  for e in unavailable
+              ) + '\n', encoding='utf-8')
+
+              Path(f'chatgpt-{key}-unavailable.tsv').write_text(
+                  'position\tid\ttitle\n' + '\n'.join(
+                      f"{e['position']}\t{e['id']}\t{e.get('title') or '(no title)'}" for e in unavailable
+                  ) + '\n', encoding='utf-8')
 
           Path('chatgpt-counts.json').write_text(json.dumps(counts, ensure_ascii=False, indent=2), encoding='utf-8')
           print(json.dumps(counts, ensure_ascii=False, indent=2))
           PY
 
-      - name: Commit staging results to temp branch
+      - name: Recover missing titles from Wayback Machine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, html, re, time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+          from urllib.parse import quote
+          import requests
+          from bs4 import BeautifulSoup
+
+          session = requests.Session()
+          session.headers.update({'User-Agent': 'Mozilla/5.0 ChatGPT playlist title recovery/1.0'})
+
+          GENERIC = {
+              'youtube', 'youtube - broadcast yourself.', 'youtube - broadcast yourself',
+              'video unavailable', 'private video', 'deleted video', 'this video is unavailable',
+              'youtube - google'
+          }
+
+          def normalize_title(value):
+              if not value:
+                  return None
+              value = html.unescape(value).strip()
+              value = re.sub(r'\s+', ' ', value)
+              value = re.sub(r'\s*-\s*YouTube\s*$', '', value, flags=re.I).strip()
+              low = value.lower().strip(' .')
+              if not value or low in GENERIC or low.startswith('youtube error'):
+                  return None
+              if 'video unavailable' in low or 'private video' in low or 'deleted video' in low:
+                  return None
+              return value
+
+          def cdx_snapshots(video_id):
+              variants = [
+                  f'https://www.youtube.com/watch?v={video_id}',
+                  f'http://www.youtube.com/watch?v={video_id}',
+                  f'https://youtube.com/watch?v={video_id}',
+                  f'http://youtube.com/watch?v={video_id}',
+                  f'https://m.youtube.com/watch?v={video_id}',
+              ]
+              seen = set()
+              snaps = []
+              for original in variants:
+                  url = ('https://web.archive.org/cdx/search/cdx?url=' + quote(original, safe='') +
+                         '&output=json&fl=timestamp,original,statuscode,mimetype&filter=statuscode:200'
+                         '&filter=mimetype:text/html&collapse=digest&limit=12')
+                  try:
+                      r = session.get(url, timeout=20)
+                      if r.status_code != 200:
+                          continue
+                      data = r.json()
+                      for row in data[1:]:
+                          if len(row) < 2:
+                              continue
+                          ts, orig = row[0], row[1]
+                          key = (ts, orig)
+                          if key not in seen:
+                              seen.add(key)
+                              snaps.append(key)
+                  except Exception:
+                      pass
+              snaps.sort(key=lambda x: x[0])
+              return snaps[:15]
+
+          def recover(video_id):
+              snaps = cdx_snapshots(video_id)
+              earliest = snaps[0][0] if snaps else ''
+              for ts, orig in snaps[:8]:
+                  snap = f'https://web.archive.org/web/{ts}id_/{orig}'
+                  try:
+                      r = session.get(snap, timeout=25)
+                      if r.status_code != 200 or not r.text:
+                          continue
+                      soup = BeautifulSoup(r.text, 'html.parser')
+                      candidates = []
+                      og = soup.find('meta', attrs={'property': 'og:title'})
+                      if og and og.get('content'):
+                          candidates.append(og.get('content'))
+                      tw = soup.find('meta', attrs={'name': 'twitter:title'})
+                      if tw and tw.get('content'):
+                          candidates.append(tw.get('content'))
+                      if soup.title and soup.title.string:
+                          candidates.append(soup.title.string)
+                      for raw in candidates:
+                          title = normalize_title(raw)
+                          if title:
+                              return {'id': video_id, 'title': title, 'snapshot': snap, 'earliest': earliest, 'status': 'recovered'}
+                  except Exception:
+                      pass
+              return {'id': video_id, 'title': '', 'snapshot': '', 'earliest': earliest, 'status': 'not found' if snaps else 'no snapshots'}
+
+          missing = []
+          for key in ('p1', 'p2'):
+              with open(f'chatgpt-{key}-unavailable.tsv', encoding='utf-8', newline='') as f:
+                  for row in csv.DictReader(f, delimiter='\t'):
+                      if row['title'] == '(no title)':
+                          missing.append((key, row['position'], row['id']))
+
+          results = {}
+          with ThreadPoolExecutor(max_workers=4) as pool:
+              futs = {pool.submit(recover, vid): (key, pos, vid) for key, pos, vid in missing}
+              for fut in as_completed(futs):
+                  key, pos, vid = futs[fut]
+                  try:
+                      rec = fut.result()
+                  except Exception:
+                      rec = {'id': vid, 'title': '', 'snapshot': '', 'earliest': '', 'status': 'error'}
+                  results[(key, vid)] = (pos, rec)
+                  print(key, vid, rec['status'], rec.get('title',''))
+
+          lines = ['playlist\tposition\tid\trecovered_title\tearliest_snapshot_date\tevidence_url\tstatus']
+          for key, pos, vid in missing:
+              _, rec = results.get((key, vid), (pos, {'title':'','earliest':'','snapshot':'','status':'error'}))
+              earliest = rec.get('earliest','')[:8]
+              if len(earliest) == 8:
+                  earliest = earliest[:4] + '-' + earliest[4:6] + '-' + earliest[6:8]
+              lines.append('\t'.join([key, str(pos), vid, rec.get('title','').replace('\t',' '), earliest, rec.get('snapshot',''), rec.get('status','')]))
+          Path('chatgpt-wayback-recovery.tsv').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Commit staging and recovery results to temp branch
         shell: bash
         run: |
           set -euo pipefail
@@ -99,11 +214,12 @@ jobs:
           cp "$GITHUB_WORKSPACE"/chatgpt-p2-all.txt /tmp/ytdlp-result-repo/
           cp "$GITHUB_WORKSPACE"/chatgpt-p2-unavailable.txt /tmp/ytdlp-result-repo/
           cp "$GITHUB_WORKSPACE"/chatgpt-p2-unavailable.tsv /tmp/ytdlp-result-repo/
+          cp "$GITHUB_WORKSPACE"/chatgpt-wayback-recovery.tsv /tmp/ytdlp-result-repo/
           cd /tmp/ytdlp-result-repo
           git config user.name 'chatgpt-temp-bot'
           git config user.email 'chatgpt-temp-bot@users.noreply.github.com'
-          git add chatgpt-counts.json chatgpt-p1-all.txt chatgpt-p1-unavailable.txt chatgpt-p1-unavailable.tsv chatgpt-p2-all.txt chatgpt-p2-unavailable.txt chatgpt-p2-unavailable.tsv
-          git commit -m 'Temporary yt-dlp staging results' || true
+          git add chatgpt-counts.json chatgpt-p1-all.txt chatgpt-p1-unavailable.txt chatgpt-p1-unavailable.tsv chatgpt-p2-all.txt chatgpt-p2-unavailable.txt chatgpt-p2-unavailable.tsv chatgpt-wayback-recovery.tsv
+          git commit -m 'Temporary yt-dlp and Wayback recovery results' || true
           git push origin HEAD:chatgpt-tmp-yt-dlp-20260819
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
