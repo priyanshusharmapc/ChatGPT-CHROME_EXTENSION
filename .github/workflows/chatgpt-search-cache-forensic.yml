@@ -1,0 +1,72 @@
+name: ChatGPT search cache forensic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-search-cache-forensic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Extract search engine cache residues
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q requests beautifulsoup4
+          python3 - <<'PY'
+          import requests,urllib.parse,re,json
+          from bs4 import BeautifulSoup
+          VID='9R_VzlxPyzA'; PL='OLAK5uy_mR76ERZKJKbFrYI8YmLvJ2r_OUPrBL458'
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'})
+          qs=[VID,'"'+VID+'"',f'"music.youtube.com/watch?v={VID}"',f'"{VID}" "{PL}"',PL]
+          engines={
+            'ddg':'https://html.duckduckgo.com/html/?q=',
+            'bing':'https://www.bing.com/search?q=',
+            'yahoo':'https://search.yahoo.com/search?p=',
+            'google':'https://www.google.com/search?num=100&q=',
+            'brave':'https://search.brave.com/search?q=',
+            'ecosia':'https://www.ecosia.org/search?q=',
+            'yandex':'https://yandex.com/search/?text=',
+          }
+          for q in qs:
+            print('\n\n######## QUERY',q,'########')
+            for name,base in engines.items():
+              print('\n===',name,'===')
+              try:
+                r=S.get(base+urllib.parse.quote(q),timeout=25)
+                print('STATUS',r.status_code,'URL',r.url,'LEN',len(r.text),'CONTAINS_ID',VID in r.text,'CONTAINS_PL',PL in r.text)
+                soup=BeautifulSoup(r.text,'html.parser')
+                # Engine-specific result blocks plus broad anchors around relevant URLs
+                blocks=[]
+                selectors=['.result','.b_algo','.dd.algo','.algo-sr','.snippet','.result-op','.g','.serp-item','.snippet-content','.result-content']
+                for sel in selectors:
+                  for node in soup.select(sel):
+                    txt=' '.join(node.stripped_strings)
+                    hrefs=[a.get('href') for a in node.find_all('a') if a.get('href')]
+                    blob=txt+' '+' '.join(hrefs)
+                    if VID.lower() in blob.lower() or PL.lower() in blob.lower() or 'music.youtube.com' in blob.lower():
+                      blocks.append((sel,txt[:3000],hrefs[:20]))
+                for i,(sel,txt,hrefs) in enumerate(blocks[:30]): print('BLOCK',i,sel,'TEXT=',txt,'HREFS=',hrefs)
+                # Print every anchor whose href or surrounding text contains the ID/playlist
+                for a in soup.find_all('a'):
+                  href=a.get('href',''); text=' '.join(a.stripped_strings)
+                  parent=' '.join(a.parent.stripped_strings) if a.parent else ''
+                  blob=href+' '+text+' '+parent
+                  if VID.lower() in blob.lower() or PL.lower() in blob.lower():
+                    print('ANCHOR TEXT=',text[:1000],'HREF=',href[:3000],'PARENT=',parent[:3000])
+                # Raw context windows around ID and OLAK in HTML
+                for needle in [VID,PL]:
+                  pos=0; count=0
+                  while True:
+                    j=r.text.find(needle,pos)
+                    if j<0 or count>=20: break
+                    print('RAWCTX',needle,'=>',re.sub(r'\s+',' ',r.text[max(0,j-1200):j+2500])[:5000])
+                    pos=j+len(needle); count+=1
+              except Exception as e: print('ERR',repr(e))
+          PY
