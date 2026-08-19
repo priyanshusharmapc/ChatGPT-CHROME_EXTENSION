@@ -1,9 +1,9 @@
 name: chatgpt-temp-ytdlp-playlists
 
 on:
-  push:
+  pull_request:
     branches:
-      - chatgpt-tmp-yt-dlp-20260819
+      - main
 
 jobs:
   extract:
