@@ -1,0 +1,42 @@
+name: chatgpt-temp-pr-artifact
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build verified playlist files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+          src=Path('.github/workflows/chatgpt-tmp-ytdlp-playlists.yml').read_text(encoding='utf-8')
+          marker="          python - <<'PY'\n"
+          start=src.index(marker)+len(marker)
+          end=src.index("\n          PY\n", start)
+          code=textwrap.dedent(src[start:end])
+          Path('/tmp/final_builder.py').write_text(code,encoding='utf-8')
+          PY
+          python /tmp/final_builder.py
+          test "$(wc -l < 'out/Songs/SONGS - all videos.txt')" -eq 1713
+          test "$(wc -l < 'out/Songs/SONGS - unavailable videos.txt')" -eq 139
+          test "$(wc -l < 'out/S/S - all videos.txt')" -eq 253
+          test "$(wc -l < 'out/S/S - unavailable videos.txt')" -eq 7
+      - name: Upload final files
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-final-playlist-files
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
