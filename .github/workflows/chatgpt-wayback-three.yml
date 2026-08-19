@@ -1,0 +1,178 @@
+name: ChatGPT deep Wayback three videos
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-wayback-three.yml
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Deep Wayback investigation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cat > investigate.py <<'PY'
+          import urllib.request, urllib.parse, urllib.error, json, re, html, time, pathlib
+
+          IDS = ['9R_VzlxPyzA','KsWhXozSi2g','PQJ8y--y16k']
+          UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
+
+          def req(url, timeout=30):
+              r=urllib.request.Request(url,headers={'User-Agent':UA,'Accept':'*/*'})
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(r,timeout=timeout) as x:
+                          return x.status, x.geturl(), x.headers.get('content-type',''), x.read()
+                  except urllib.error.HTTPError as e:
+                      try: body=e.read()
+                      except Exception: body=b''
+                      return e.code, e.geturl(), e.headers.get('content-type','') if e.headers else '', body
+                  except Exception as e:
+                      if attempt==2: return 0,url,'',str(e).encode()
+                      time.sleep(2+attempt*2)
+
+          def extract_signals(body, vid):
+              text=body.decode('utf-8','ignore')
+              out=[]
+              patterns=[
+                ('html_title', r'<title[^>]*>(.*?)</title>'),
+                ('og_title', r'<meta[^>]+(?:property|name)=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']'),
+                ('meta_title', r'<meta[^>]+name=["\']title["\'][^>]+content=["\']([^"\']+)["\']'),
+                ('eow_title', r'id=["\']eow-title["\'][^>]+title=["\']([^"\']+)["\']'),
+                ('videoDetails_title', r'"videoDetails"\s*:\s*\{.*?"title"\s*:\s*"((?:\\.|[^"\\])*)"'),
+                ('json_title', r'"title"\s*:\s*"((?:\\.|[^"\\])*)"'),
+              ]
+              for label,pat in patterns:
+                  for m in re.finditer(pat,text,re.I|re.S):
+                      v=m.group(1)
+                      try:
+                          if label in ('videoDetails_title','json_title'):
+                              v=json.loads('"'+v+'"')
+                      except Exception: pass
+                      v=html.unescape(re.sub(r'\s+',' ',v)).strip()
+                      if v and v not in [x[1] for x in out] and len(v)<500:
+                          out.append((label,v))
+                          if len(out)>=25: return out
+              return out
+
+          def cdx(url, prefix=False, limit=500):
+              p={'url':url,'output':'json','fl':'timestamp,original,statuscode,mimetype,digest,length','limit':str(limit)}
+              if prefix: p['matchType']='prefix'
+              api='https://web.archive.org/cdx/search/cdx?'+urllib.parse.urlencode(p)
+              st,final,ct,body=req(api,45)
+              try: data=json.loads(body)
+              except Exception: data=[]
+              rows=[]
+              if isinstance(data,list) and data and isinstance(data[0],list): rows=data[1:]
+              return {'query':api,'http':st,'rows':rows,'raw':body.decode('utf-8','ignore')[:20000]}
+
+          allout={}
+          for vid in IDS:
+              print('\n###',vid,flush=True)
+              rec={'id':vid}
+
+              # This is the exact "earliest archive" lookup used by Filmot Title Restorer.
+              earliest_url=('https://web.archive.org/cdx/search/cdx?url='
+                  + urllib.parse.quote(f'wayback-fakeurl.archive.org/yt/{vid}',safe='/')
+                  + '&fl=timestamp,original&output=json&closest=20050101000000&limit=1')
+              st,final,ct,body=req(earliest_url,45)
+              rec['filmot_restorer_earliest']={'url':earliest_url,'http':st,'body':body.decode('utf-8','ignore')}
+              print('EARLIEST_FAKEURL',body.decode('utf-8','ignore')[:1000],flush=True)
+
+              # Full direct-video archive history.
+              rec['fakeurl_cdx']=cdx(f'wayback-fakeurl.archive.org/yt/{vid}',False,500)
+              print('FAKEURL_ROWS',len(rec['fakeurl_cdx']['rows']),flush=True)
+
+              variants=[
+                f'https://www.youtube.com/watch?v={vid}',
+                f'http://www.youtube.com/watch?v={vid}',
+                f'https://youtube.com/watch?v={vid}',
+                f'http://youtube.com/watch?v={vid}',
+                f'https://m.youtube.com/watch?v={vid}',
+                f'http://m.youtube.com/watch?v={vid}',
+                f'https://youtu.be/{vid}',
+                f'http://youtu.be/{vid}',
+                f'https://www.youtube.com/embed/{vid}',
+                f'http://www.youtube.com/embed/{vid}',
+              ]
+              captures=[]
+              rec['cdx_queries']=[]
+              for u in variants:
+                  q=cdx(u,True,500)
+                  rec['cdx_queries'].append(q)
+                  for row in q['rows']:
+                      if len(row)>=2: captures.append(row)
+              # dedupe and sort chronologically
+              seen=set(); uniq=[]
+              for row in sorted(captures,key=lambda r:r[0]):
+                  key=(row[0],row[1])
+                  if key not in seen:
+                      seen.add(key); uniq.append(row)
+              rec['captures']=uniq
+              print('WATCH_CAPTURE_ROWS',len(uniq),flush=True)
+              print('FIRST_CAPTURES',json.dumps(uniq[:15],ensure_ascii=False),flush=True)
+
+              # Fetch earliest 12 distinct archived HTML pages and latest 5.
+              selected=[]
+              for r in uniq:
+                  if len(selected)>=12: break
+                  if len(r)>=4 and ('html' in (r[3] or '') or not r[3]): selected.append(r)
+              for r in reversed(uniq):
+                  if len(selected)>=17: break
+                  if r not in selected and len(r)>=4 and ('html' in (r[3] or '') or not r[3]): selected.append(r)
+              pages=[]
+              for r in selected:
+                  ts,orig=r[0],r[1]
+                  urls=[f'https://web.archive.org/web/{ts}id_/{orig}',f'https://web.archive.org/web/{ts}/{orig}']
+                  best=None
+                  for ru in urls:
+                      st2,fin2,ct2,b2=req(ru,45)
+                      sig=extract_signals(b2,vid)
+                      item={'timestamp':ts,'original':orig,'replay':ru,'http':st2,'final':fin2,'content_type':ct2,'bytes':len(b2),'signals':sig}
+                      if sig or st2==200:
+                          best=item
+                          # preserve a bounded copy for manual inspection
+                          pathlib.Path(f'evidence/{vid}_{ts}.html').write_bytes(b2[:3000000])
+                          if sig: break
+                      elif best is None: best=item
+                  pages.append(best)
+                  if best and best.get('signals'):
+                      print('PAGE',ts,orig,'SIGNALS',json.dumps(best['signals'],ensure_ascii=False),flush=True)
+              rec['pages']=pages
+
+              # Wayback YouTube video info endpoint.
+              vi=f'https://web.archive.org/__wb/videoinfo?vtype=youtube&vid={vid}'
+              st3,fin3,ct3,b3=req(vi,45)
+              rec['videoinfo']={'url':vi,'http':st3,'body':b3.decode('utf-8','ignore')[:100000]}
+              print('VIDEOINFO_HTTP',st3,'BODY',b3.decode('utf-8','ignore')[:1200],flush=True)
+
+              # The zero-timestamp replay, useful for seeing what Wayback considers the earliest replay.
+              zero=f'https://web.archive.org/web/0id_/https://www.youtube.com/watch?v={vid}'
+              st4,fin4,ct4,b4=req(zero,45)
+              rec['zero_replay']={'url':zero,'http':st4,'final':fin4,'content_type':ct4,'signals':extract_signals(b4,vid),'bytes':len(b4)}
+              print('ZERO_REPLAY',st4,fin4,json.dumps(rec['zero_replay']['signals'],ensure_ascii=False),flush=True)
+
+              allout[vid]=rec
+              pathlib.Path(f'evidence/{vid}.json').write_text(json.dumps(rec,indent=2,ensure_ascii=False))
+
+          pathlib.Path('summary.json').write_text(json.dumps(allout,indent=2,ensure_ascii=False))
+          PY
+          python3 investigate.py | tee summary.txt
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-wayback-three-evidence
+          path: |
+            summary.json
+            summary.txt
+            evidence/
+          retention-days: 3
+          if-no-files-found: error
