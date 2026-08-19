@@ -65,3 +65,6 @@ jobs:
           print('CHATGPT_YTDLP_EVIDENCE_END')
           print('COUNTS', json.dumps({k: {'full': len(v['full']), 'available': len(v['available'])} for k, v in result.items()}))
           PY
+
+      - name: Mark completion
+        run: echo extraction-complete
