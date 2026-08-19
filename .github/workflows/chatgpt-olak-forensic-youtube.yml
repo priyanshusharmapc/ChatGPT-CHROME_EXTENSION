@@ -1,0 +1,115 @@
+name: ChatGPT OLAK forensic YouTube recovery
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/chatgpt-olak-forensic-youtube.yml
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve YouTube Music OLAK playlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import requests,re,json,pathlib,time,urllib.parse
+          VID='9R_VzlxPyzA'
+          PL='OLAK5uy_mR76ERZKJKbFrYI8YmLvJ2r_OUPrBL458'
+          S=requests.Session(); S.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'})
+          out={}
+          def get(url,timeout=90,**kw):
+              try:
+                  r=S.get(url,timeout=timeout,allow_redirects=True,**kw)
+                  z={'status':r.status_code,'url':r.url,'headers':dict(r.headers)}
+                  try:z['json']=r.json()
+                  except:z['text']=r.text[:100000]
+                  return z
+              except Exception as e:return {'error':repr(e),'url':url}
+          def post(url,payload,headers=None,timeout=90):
+              try:
+                  r=S.post(url,json=payload,headers=headers or {},timeout=timeout)
+                  z={'status':r.status_code,'url':r.url,'headers':dict(r.headers)}
+                  try:z['json']=r.json()
+                  except:z['text']=r.text[:100000]
+                  return z
+              except Exception as e:return {'error':repr(e),'url':url}
+
+          # Direct public playlist surfaces
+          for name,url in {
+              'music_playlist':f'https://music.youtube.com/playlist?list={PL}',
+              'youtube_playlist':f'https://www.youtube.com/playlist?list={PL}',
+              'music_watch':f'https://music.youtube.com/watch?v={VID}&list={PL}',
+              'youtube_watch':f'https://www.youtube.com/watch?v={VID}&list={PL}',
+          }.items(): out[name]=get(url)
+
+          # Extract keys/config from YouTube Music and YouTube pages
+          configs=[]
+          for surface in ['music_playlist','music_watch','youtube_playlist','youtube_watch']:
+              text=out.get(surface,{}).get('text','')
+              key=re.search(r'"INNERTUBE_API_KEY":"([^"]+)',text)
+              ver=re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)',text)
+              cnum=re.search(r'"INNERTUBE_CONTEXT_CLIENT_NAME":(\d+)',text)
+              visitor=re.search(r'"VISITOR_DATA":"([^"]+)',text)
+              if key and ver:
+                  configs.append({'surface':surface,'key':key.group(1),'ver':ver.group(1),'cnum':cnum.group(1) if cnum else None,'visitor':visitor.group(1) if visitor else None})
+          out['configs']=configs
+
+          # Browse OLAK playlist with both YouTube and YouTube Music clients
+          for cfg in configs[:4]:
+              key=cfg['key']; origin='https://music.youtube.com' if cfg['surface'].startswith('music') else 'https://www.youtube.com'
+              clients=[
+                  ('WEB_REMIX','1.20260811.15.00'),
+                  ('WEB',cfg['ver']),
+              ]
+              for cname,cver in clients:
+                  common={'context':{'client':{'clientName':cname,'clientVersion':cver,'hl':'en','gl':'US'}}}
+                  if cfg.get('visitor'): common['context']['client']['visitorData']=cfg['visitor']
+                  hdr={'Content-Type':'application/json','Origin':origin}
+                  # Music album/release playlist browse usually wants VL prefix
+                  for browse_id in ['VL'+PL,PL]:
+                      out[f'browse_{cfg["surface"]}_{cname}_{browse_id[:5]}']=post('https://www.youtube.com/youtubei/v1/browse?key='+key+'&prettyPrint=false',{**common,'browseId':browse_id},hdr)
+                  # next/playlist endpoint with current dead ID
+                  out[f'next_{cfg["surface"]}_{cname}']=post('https://www.youtube.com/youtubei/v1/next?key='+key+'&prettyPrint=false',{**common,'videoId':VID,'playlistId':PL},hdr)
+                  # search the exact OLAK and video IDs from YouTube Music internals
+                  for q in [PL,VID,f'{VID} {PL}','NO BATIDÃO']:
+                      out[f'search_{cfg["surface"]}_{cname}_{q[:12]}']=post('https://www.youtube.com/youtubei/v1/search?key='+key+'&prettyPrint=false',{**common,'query':q},hdr)
+              break
+
+          # Retry YouTube Video Finder with long timeout and multiple variants
+          for suffix in ['', '?includeRaw=false', '?includeRaw=true']:
+              for ver in ['v5','v4']:
+                  out[f'fyt_{ver}_{suffix or "plain"}']=get(f'https://findyoutubevideo.thetechrobo.ca/api/{ver}/{VID}{suffix}',timeout=120)
+
+          pathlib.Path('olak.json').write_text(json.dumps(out,indent=2,ensure_ascii=False))
+
+          def walk(x,path=''):
+              hits=[]
+              if isinstance(x,dict):
+                  for k,v in x.items(): hits += walk(v,path+'/'+str(k))
+              elif isinstance(x,list):
+                  for i,v in enumerate(x): hits += walk(v,path+f'[{i}]')
+              elif isinstance(x,str):
+                  s=x.lower()
+                  if VID.lower() in s or PL.lower() in s or 'batid' in s or 'slowed' in s or 'zxkai' in s or 'slxughter' in s or 'title' in path.lower() or 'lengthseconds' in path.lower() or 'videoid' in path.lower() or 'playlistid' in path.lower():
+                      if len(x)<5000:hits.append((path,x))
+              return hits
+          hits=walk(out)
+          print('=== OLAK HIGH VALUE SIGNALS ===')
+          for p,v in hits[:1500]: print(p,'=>',v.replace('\n',' ')[:1500])
+          print('=== FYT SUMMARIES ===')
+          for k,v in out.items():
+              if k.startswith('fyt_'): print(k, json.dumps(v,ensure_ascii=False)[:20000])
+          PY
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-olak-forensic-youtube
+          path: olak.json
+          retention-days: 3
