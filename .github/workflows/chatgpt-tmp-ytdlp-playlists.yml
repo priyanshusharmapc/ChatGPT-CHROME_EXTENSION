@@ -1,4 +1,4 @@
-name: chatgpt-temp-unavailable-metadata
+name: chatgpt-temp-final-playlist-files
 
 on:
   push:
@@ -8,55 +8,208 @@ on:
       - .github/workflows/chatgpt-tmp-ytdlp-playlists.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  metadata:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
           ref: chatgpt-tmp-yt-dlp-20260819
           fetch-depth: 1
-      - run: python -m pip install --upgrade yt-dlp
-      - name: Extract unavailable entry metadata
+
+      - name: Build requested files
         shell: bash
         run: |
           set -euo pipefail
-          P1='https://www.youtube.com/playlist?list=PLIV1G--hNI58vN4-NJ33JuE2JNDc8Bq4G'
-          P2='https://www.youtube.com/playlist?list=PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx'
-          yt-dlp --flat-playlist --ignore-errors --dump-single-json "$P1" > meta-p1-full.json
-          yt-dlp --flat-playlist --ignore-errors --dump-single-json --compat-options no-youtube-unavailable-videos "$P1" > meta-p1-avail.json
-          yt-dlp --flat-playlist --ignore-errors --dump-single-json "$P2" > meta-p2-full.json
-          yt-dlp --flat-playlist --ignore-errors --dump-single-json --compat-options no-youtube-unavailable-videos "$P2" > meta-p2-avail.json
           python - <<'PY'
-          import csv,json
+          import csv, json, re
           from pathlib import Path
-          out=[]
-          fields=['playlist','position','id','title','channel','channel_id','uploader','uploader_id','artist','album','release_year','availability']
-          for key in ('p1','p2'):
-              full=json.loads(Path(f'meta-{key}-full.json').read_text())
-              av=json.loads(Path(f'meta-{key}-avail.json').read_text())
-              av_ids={e.get('id') for e in (av.get('entries') or []) if e}
-              for i,e in enumerate(full.get('entries') or [],1):
-                  if not e or not e.get('id') or e.get('id') in av_ids: continue
-                  out.append({
-                    'playlist':key,'position':e.get('playlist_index') or i,'id':e.get('id'),
-                    'title':e.get('title') or '(no title)','channel':e.get('channel') or '',
-                    'channel_id':e.get('channel_id') or '', 'uploader':e.get('uploader') or '',
-                    'uploader_id':e.get('uploader_id') or '', 'artist':e.get('artist') or '',
-                    'album':e.get('album') or '', 'release_year':e.get('release_year') or '',
-                    'availability':e.get('availability') or ''})
-          with open('chatgpt-unavailable-metadata.tsv','w',encoding='utf-8',newline='') as f:
-              w=csv.DictWriter(f,fieldnames=fields,delimiter='\t',lineterminator='\n'); w.writeheader(); w.writerows(out)
-          print('rows',len(out),'with channel',sum(1 for r in out if r['channel'] or r['uploader'] or r['artist']))
+
+          # High-confidence recoveries for entries yt-dlp exposes without a title.
+          missing_overrides = {
+              'UqHb_NtArMA': 'Nightcore - Mi Mi Mi (Rock Version)',
+              '6w6MDTbPrgg': 'Nakama - MENTE MÁ',
+              'HWqKPWO5T4o': 'Nino Rota - The Godfather Theme (Love Theme) [film score]',
+              'eNGDWBVel6w': 'Kali Uchis - Moonlight',
+              'eTMQ-u8PQi8': 'ATLXS - PASSO BEM SOLTO (Ultra Slowed) [Brazilian phonk/funk]',
+              'F8UYGQeavRw': 'Mötley Crüe - Kickstart My Heart [glam metal/hard rock]',
+              'iAv3oBSOmF8': '50 Cent - Many Men (Wish Death) [hip-hop]',
+              'vQMa1XAymm8': 'Gabriel Albuquerque - Solas x Interstellar [cinematic/soundtrack]',
+              '9lhYFSRYNiU': 'Xandy JJ - MONTAGEM CORAL x See on your way [Brazilian phonk/funk]',
+              'GCnaOCilsAI': 'Desire...',
+              'XFFDG5FRbWk': 'Steve Jablonsky - Sentinel Prime (Transformers: Dark of the Moon OST) [film score]',
+              '0kFGbZ9KrlI': 'Ajay-Atul - Hai Katha Sangram Ki (Mahabharat 2013 Title Song) [TV soundtrack/devotional]',
+              'bDOwSx5xXIw': 'Mareux - The Perfect Girl [darkwave/post-punk]',
+              'Clx2ZEXhDCk': 'HAUSERJR - Smoke (feat. JOEHDAH)',
+              'IKFuaExJ-EI': 'Marina and the Diamonds - Immortal (MewOne!, Syberian Beast Remix)',
+              'Jrg9KxGNeJY': "Casey Edwards - Bury the Light (Vergil's Battle Theme, Devil May Cry 5 Special Edition) [video game soundtrack/metal]",
+              'Q_b5LVWF-68': 'Hensonn - Sahara [phonk]',
+              '8QE9cmfxx4s': 'Nightmare - the WORLD (Death Note OP1) [anime rock]',
+              'yArDurN6hoA': "Maximum the Hormone - What's up, people?! (Death Note OP2) [anime metal]",
+              'XUhVCoTsBaM': "JoJo's Bizarre Adventure - Awaken (Pillar Men Theme) [anime soundtrack]",
+              'fOsB5AoKDJc': 'Mick Gordon - The Only Thing They Fear Is You (DOOM Eternal) [video game soundtrack/industrial metal]',
+              'KlW-uHtmnBg': 'Nightshift TV - Drive Forever',
+              'nJtiYPe9nv4': 'Undertale - All Boss Themes [video game soundtrack compilation]',
+              'SU4QLjphivo': 'Christophe Beck - Edge of Tomorrow [film score]',
+          }
+
+          # Artist/source enrichment for ambiguous or generic titles whose uploader/artist
+          # was retained by yt-dlp or confirmed by search. This is intentionally selective.
+          known_overrides = {
+              'mQXb6Gp1h9U': 'syncmusic - NO SIGNAL Eclipse',
+              'vYn1b8gcmrY': 'Samrai Blade - FAAAHHH',
+              'gsG6jkkuC00': 'Skryptonite - Цепи (feat. 104)',
+              'CtJfE9cv7lc': 'John Cena - The Time Is Now [WWE theme/hip-hop]',
+              'gHFHXIG6Rro': 'The Prodigy - Take Me to the Hospital',
+              'qlJBj3mAz2c': 'Sanks - Mask Off (Epic Version)',
+              'JZgCs4hCd20': "The Prodigy - Warrior's Dance",
+              'vfRcnAwimh4': 'Everett Dejean - Face the Music',
+              '__dQcNsxhTI': 'Evan Call - Dragon Smasher',
+              'nPZP8y5tGh0': 'DJ Asul - MATADORA (Ultra Slowed)',
+              'ODSYH-CkiWA': 'quietshadow - FOCUS 2 (Over Slowed)',
+              'qXDTiTH_1ok': "Penguin Master - L'amour Toujours (Organ Penguin Version)",
+              'IuYsaw0qX9Y': 'mikeeysmind - Papaoutai (Afro Soul)',
+              'CaIenzfJJQ4': 'SEKIRX - MONTAGEM DO MEDO (Mega Slowed)',
+              'LOK7wZaVlLU': 'insectt0s - Instant Hit',
+              '443p6mmPCwk': 'Sluwøp - Menace 1 (Slowed + Reverb)',
+              'p5J7afpqcPY': 'MXZI - MONTAGEM XONADA (Slowed)',
+              'xflREqoH8To': 'DJ Asul - NO ERA AMOR (Super Slowed)',
+              '4BPSpabKjA8': 'DJ Asul - NO ERA AMOR (Extremely Slowed)',
+              'ij8RkC6dLn0': 'Clint Mansell - Marion Barfs',
+              'qePI5n1eF30': 'Blast Off Music - Dark Future',
+              'drDn2BwEYcw': 'DJ Asul - NO ERA AMOR (Slowed)',
+              '3b71vtXtgF8': 'Lunar Spark - Drizzling Serenity',
+              'aaLADvBZaxA': 'Sayfalse - COM MEDO! (Super Slowed)',
+              'IOrKYzOGzg0': "Bare Up - Can't Stop",
+              'ygFUzZFL-r0': 'Hexora - BLAH',
+              'HyklZmIjQRk': 'Kobe Mane - Olympo Rave',
+              'GTIBcSOB31k': "O.D. - Don't Play That",
+              'PkNtBuwWq_o': 'Peter Gabriel - My Body Is A Cage',
+              'G7OOJs0qCU0': 'Blast Off Music - Nebula',
+              '_FGVfpIjjCI': 'Lumea - Drift Beyond Clarity',
+              'VncGDqIbNVQ': 'ALXIKE - FUNK ESTRANHO (SUPER SLOWED)',
+              'CWpQs-qXi9c': 'SAD PHONK - Starlight Journey',
+              'FTpHsPwSm7g': 'Zardonic - Raise Hell (Original Mix)',
+              'zdpWmqBIs1w': 'Blast Off Music - Horizon',
+              'vPqO67DZxlk': 'LONOWN - AVANGARD (Slowed)',
+              'AdDgDktxiRU': 'East Duo - ჩუბინა',
+              'GQwBXef55D8': 'ByAstral - WHOOPS!',
+              'w_VQJBWvJcI': 'MVSTERIOUS - SLAVA FUNK!',
+              'YW2LC4ovrd4': 'ptasinski - life force',
+              '9o8d2HZE0Yc': 'visioner. - Menace (Slowed + Reverb)',
+              'Ksk2obagexs': 'Digital Bridge - Rolling Thunder',
+              'm4PODtj-TOg': 'vicX - 9 Am',
+              'tI2ZSqtikrk': 'The Soul Mate - Malevolent Chant',
+              'q5ncE4wIvfw': 'Ogryzek - GLORY [phonk]',
+              'ktkK6vlS9JU': 'Los Coast - Simplify',
+              'bekns9G2eCI': 'Digital Bridge - Frozen Gaze (Acoustic Version)',
+              '63pWZhYg7PA': 'mori - First Blood',
+              'LL0z-EiJbMI': 'AnyMindMusic Library - The Begin (Dramatic)',
+              'tJTjr_suT1g': 'Gibran Alcocer - Idea 22',
+              'OHw5I5JIVc8': 'Gibran Alcocer - Idea 22 (Slowed + Reverb)',
+              'p0CxxFaXC7s': 'iwilldiehere - Vengeance',
+              '_-XWQKQKOnM': 'visioner. - Menace (Sped Up)',
+              'fkrYH6Ll984': 'Tenseoh - Heartburn (Slowed + Reverb)',
+              '41Y-inDev5o': 'visioner. - Menace',
+              'k9QOk0XsOo0': 'TBang Music - Royalty (Slowed & Reverb)',
+              'AyfY9hHF05U': 'DJ Agos - Stereo Love (speed up)',
+              'HsLOxbLZMy8': "Mick Gordon - At Doom's Gate [video game soundtrack]",
+              'xOcpXSko1_0': 'SXMPRA - COWBELL WARRIOR!',
+              '93fAJe8WVjA': 'Steppenwolf - Born To Be Wild [hard rock]',
+              'VJDXOWqs_HI': 'Hans Zimmer - Beautiful Lie (Batman v Superman: Dawn of Justice Soundtrack) [film score]',
+              'bte1rCN7sQg': 'Louis Lion - Distance',
+              'U6Pm0iVvFXs': "Coolio - Gangsta's Paradise [hip-hop]",
+              'hMts_vK-arQ': "Rob Dougan - I'm Not Driving Anymore (Rollo's Mix / Instrumental)",
+              'wi8X0ziGcqI': 'Nightshift TV - Drive Forever',
+
+              # S playlist, all seven hidden entries.
+              'ZcaWPrhgFeA': 'Memphis Cult, Groove Dealers & SPLYXER - For the Nigguz [Memphis phonk/hip-hop]',
+              'e-7lBX_7MYM': 'Owen Cropper - NASTY (Slowed Loop)',
+              '_KAK3H63py0': 'PsycoTune - NO BATIDÃO (Ultra Slowed)',
+              'ge1mZ_CoGqs': 'Testosterone - Woops Warhammer',
+              'uOpt3eUvQEU': 'alt-J - Tessellate [indietronica/art rock/trip hop]',
+              'ICcNkseFQXg': 'mikeeysmind & 725 - Molly (Guitar Rmx) [alternative]',
+          }
+
+          override = dict(known_overrides)
+          override.update(missing_overrides)
+
+          def parse_all(path):
+              rows=[]
+              for raw in Path(path).read_text(encoding='utf-8').splitlines():
+                  if not raw.strip():
+                      continue
+                  m=re.match(r'^(.*) - https://www\.youtube\.com/watch\?v=([^\s]+)$', raw)
+                  if not m:
+                      raise ValueError(f'Cannot parse line: {raw!r}')
+                  rows.append((m.group(2),m.group(1)))
+              return rows
+
+          def parse_unavail(path):
+              rows=[]
+              with open(path,encoding='utf-8',newline='') as f:
+                  for r in csv.DictReader(f,delimiter='\t'):
+                      rows.append((r['id'],r['title']))
+              return rows
+
+          def final_title(vid, original):
+              return override.get(vid, original or '(no title)')
+
+          def write_lines(rows,path):
+              Path(path).parent.mkdir(parents=True,exist_ok=True)
+              Path(path).write_text('\n'.join(
+                  f"{final_title(vid,title)} - https://www.youtube.com/watch?v={vid}" for vid,title in rows
+              )+'\n',encoding='utf-8')
+
+          p1_all=parse_all('chatgpt-p1-all.txt')
+          p2_all=parse_all('chatgpt-p2-all.txt')
+          p1_un=parse_unavail('chatgpt-p1-unavailable.tsv')
+          p2_un=parse_unavail('chatgpt-p2-unavailable.tsv')
+
+          write_lines(p1_all,'out/Songs/SONGS - all videos.txt')
+          write_lines(p1_un,'out/Songs/SONGS - unavailable videos.txt')
+          write_lines(p2_all,'out/S/S - all videos.txt')
+          write_lines(p2_un,'out/S/S - unavailable videos.txt')
+
+          def stats(all_rows, un_rows):
+              missing=[vid for vid,title in un_rows if not title or title=='(no title)']
+              recovered=[vid for vid in missing if vid in missing_overrides]
+              unresolved=[vid for vid in missing if vid not in missing_overrides]
+              return {
+                  'total_videos':len(all_rows),
+                  'unavailable_videos':len(un_rows),
+                  'missing_titles_initial':len(missing),
+                  'missing_titles_recovered':len(recovered),
+                  'missing_titles_unrecoverable':len(unresolved),
+                  'recovered_ids':recovered,
+                  'unrecoverable_ids':unresolved,
+              }
+
+          report={
+              'SONGS':stats(p1_all,p1_un),
+              'S':stats(p2_all,p2_un),
+              'notes':{
+                  'method':'normal yt-dlp extraction minus --compat-options no-youtube-unavailable-videos',
+                  'wayback_title_recoveries':0,
+                  'recovery_basis':'high-confidence exact-video-ID public web evidence; uncertain matches left as (no title)',
+              }
+          }
+          Path('out/recovery-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print(json.dumps(report,ensure_ascii=False,indent=2))
           PY
-      - name: Commit metadata
-        shell: bash
-        run: |
-          git config user.name 'chatgpt-temp-bot'
-          git config user.email 'chatgpt-temp-bot@users.noreply.github.com'
-          git add chatgpt-unavailable-metadata.tsv
-          git commit -m 'Temporary unavailable uploader metadata' || exit 0
-          git push origin HEAD:chatgpt-tmp-yt-dlp-20260819
+
+          test "$(wc -l < 'out/Songs/SONGS - all videos.txt')" -eq 1713
+          test "$(wc -l < 'out/Songs/SONGS - unavailable videos.txt')" -eq 139
+          test "$(wc -l < 'out/S/S - all videos.txt')" -eq 253
+          test "$(wc -l < 'out/S/S - unavailable videos.txt')" -eq 7
+
+      - name: Upload final bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-final-playlist-files
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
