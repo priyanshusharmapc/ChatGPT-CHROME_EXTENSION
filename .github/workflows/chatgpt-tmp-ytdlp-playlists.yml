@@ -1,4 +1,4 @@
-name: chatgpt-temp-id-websearch
+name: chatgpt-temp-id-candidates
 
 on:
   push:
@@ -11,94 +11,58 @@ permissions:
   contents: write
 
 jobs:
-  search:
+  summarize:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           ref: chatgpt-tmp-yt-dlp-20260819
           fetch-depth: 1
-      - run: python -m pip install requests beautifulsoup4
-      - name: Exact-ID search
+      - name: Select concise candidate evidence
         shell: bash
         run: |
           python - <<'PY'
-          import csv, re, time
-          from concurrent.futures import ThreadPoolExecutor, as_completed
-          from pathlib import Path
-          from urllib.parse import quote, urlparse, parse_qs, unquote
-          import requests
-          from bs4 import BeautifulSoup
+          import csv,re
+          from collections import defaultdict
 
-          headers={'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/125 Safari/537.36'}
-          ids=[]
-          for key in ('p1','p2'):
-              with open(f'chatgpt-{key}-unavailable.tsv',encoding='utf-8',newline='') as f:
-                  for row in csv.DictReader(f,delimiter='\t'):
-                      if row['title']=='(no title)': ids.append((key,row['position'],row['id']))
+          rows=defaultdict(list)
+          with open('chatgpt-id-websearch.tsv',encoding='utf-8',newline='') as f:
+              for r in csv.DictReader(f,delimiter='\t'):
+                  rows[(r['playlist'],int(r['position']),r['id'])].append(r)
 
-          def clean(s): return re.sub(r'\s+',' ',s or '').strip()
+          def score(r,vid):
+              title=r['result_title'].lower(); snip=r['snippet'].lower(); url=r['url'].lower()
+              s=0
+              if vid.lower() in snip or vid.lower() in title: s+=5
+              if 'duckduckgo.com' in url: s+=3
+              if 'youtube' in r['result_title'].lower(): s+=1
+              if any(x in title for x in ['github','amazon','reddit','documentation','phone specifications']): s-=4
+              if any(x in snip for x in ['song','music','bgm','theme','soundtrack','original','background']): s+=2
+              return s
 
-          def bing(vid):
-              q=quote('"'+vid+'" YouTube')
-              url='https://www.bing.com/search?q='+q+'&count=8'
-              try:
-                  r=requests.get(url,headers=headers,timeout=12)
-                  soup=BeautifulSoup(r.text,'html.parser')
-                  out=[]
-                  for li in soup.select('li.b_algo')[:6]:
-                      a=li.select_one('h2 a')
-                      p=li.select_one('.b_caption p')
-                      if a:
-                          out.append((clean(a.get_text(' ',strip=True)),clean(p.get_text(' ',strip=True) if p else ''),a.get('href','')))
-                  return out
-              except Exception: return []
+          out=[]
+          for key,items in sorted(rows.items(), key=lambda kv:(kv[0][0],kv[0][1])):
+              pl,pos,vid=key
+              ranked=sorted(items,key=lambda r:(-score(r,vid),int(r['rank'])))[:3]
+              cells=[]
+              for r in ranked:
+                  t=re.sub(r'\s+',' ',r['result_title']).strip().replace('\t',' ')
+                  s=re.sub(r'\s+',' ',r['snippet']).strip().replace('\t',' ')
+                  cells.append(f"{t} :: {s}")
+              out.append([pl,pos,vid]+cells+['']*(3-len(cells)))
 
-          def ddg(vid):
-              q=quote('"'+vid+'"')
-              url='https://html.duckduckgo.com/html/?q='+q
-              try:
-                  r=requests.get(url,headers=headers,timeout=12)
-                  soup=BeautifulSoup(r.text,'html.parser')
-                  out=[]
-                  for res in soup.select('.result')[:6]:
-                      a=res.select_one('.result__a')
-                      s=res.select_one('.result__snippet')
-                      if a:
-                          out.append((clean(a.get_text(' ',strip=True)),clean(s.get_text(' ',strip=True) if s else ''),a.get('href','')))
-                  return out
-              except Exception: return []
-
-          def work(item):
-              key,pos,vid=item
-              b=bing(vid); d=ddg(vid)
-              merged=[]; seen=set()
-              for x in b+d:
-                  sig=(x[0],x[2])
-                  if sig not in seen:
-                      seen.add(sig); merged.append(x)
-              return key,pos,vid,merged[:8]
-
-          rows=[]
-          with ThreadPoolExecutor(max_workers=8) as ex:
-              futs=[ex.submit(work,x) for x in ids]
-              for fut in as_completed(futs):
-                  key,pos,vid,res=fut.result()
-                  for rank,(title,snip,url) in enumerate(res,1):
-                      rows.append((key,int(pos),vid,rank,title,snip,url))
-          rows.sort(key=lambda x:(x[0],x[1],x[3]))
-          with open('chatgpt-id-websearch.tsv','w',encoding='utf-8',newline='') as f:
+          with open('chatgpt-id-candidates.tsv','w',encoding='utf-8',newline='') as f:
               w=csv.writer(f,delimiter='\t',lineterminator='\n')
-              w.writerow(['playlist','position','id','rank','result_title','snippet','url'])
-              w.writerows(rows)
-          print('ids',len(ids),'result rows',len(rows))
+              w.writerow(['playlist','position','id','candidate1','candidate2','candidate3'])
+              w.writerows(out)
+          print('candidate ids',len(out))
           PY
-      - name: Commit search evidence
+      - name: Commit candidates
         shell: bash
         run: |
           git config user.name 'chatgpt-temp-bot'
           git config user.email 'chatgpt-temp-bot@users.noreply.github.com'
-          git add chatgpt-id-websearch.tsv
-          git commit -m 'Temporary exact-ID web search evidence' || exit 0
+          git add chatgpt-id-candidates.tsv
+          git commit -m 'Temporary concise recovery candidates' || exit 0
           git push origin HEAD:chatgpt-tmp-yt-dlp-20260819
