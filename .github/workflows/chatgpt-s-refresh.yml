@@ -1,0 +1,52 @@
+name: ChatGPT S Refresh
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yt-dlp
+        run: python -m pip install -q --upgrade yt-dlp
+      - name: Extract current S playlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          PL='https://www.youtube.com/playlist?list=PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx'
+          yt-dlp --flat-playlist --dump-json "$PL" > all.jsonl
+          yt-dlp --compat-options no-youtube-unavailable-videos --flat-playlist --dump-json "$PL" > avail.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          all_rows=[]
+          for line in Path('all.jsonl').read_text(encoding='utf-8').splitlines():
+              if not line.strip():
+                  continue
+              x=json.loads(line)
+              all_rows.append({'id':x.get('id'),'title':x.get('title')})
+          avail_ids=set()
+          for line in Path('avail.jsonl').read_text(encoding='utf-8').splitlines():
+              if not line.strip():
+                  continue
+              x=json.loads(line)
+              if x.get('id'):
+                  avail_ids.add(x['id'])
+          entries=[]
+          for x in all_rows:
+              entries.append({'id':x['id'],'title':x.get('title'),'unavailable':x['id'] not in avail_ids})
+          payload={
+              'total':len(entries),
+              'available':sum(not x['unavailable'] for x in entries),
+              'unavailable':sum(x['unavailable'] for x in entries),
+              'entries':entries,
+          }
+          print('S_REFRESH_JSON_BEGIN')
+          print(json.dumps(payload,ensure_ascii=False,separators=(',',':')))
+          print('S_REFRESH_JSON_END')
+          PY
