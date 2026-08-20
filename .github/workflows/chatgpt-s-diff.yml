@@ -1,0 +1,40 @@
+name: ChatGPT S Diff
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m pip install -q --upgrade yt-dlp
+      - name: Compare current playlist with prior Drive snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          PL='https://www.youtube.com/playlist?list=PL8zgWQ7EPbOdRn7mXLWoa0DqfbcIbJnjx'
+          yt-dlp --flat-playlist --dump-json "$PL" > current.jsonl
+          cat > old_ids.txt <<'EOF'
+          cJ7htSdD16s,IOol_qLST1g,2ZyDpwJQe70,d-aQbABYcno,7G4XbaFuYXk,jT_2WIzOs5w,hMYFzq-lcyY,C9eiLjHKIOI,bsvzP8EO65w,CwHPIOpSJps,fTTsY-oz6Go,NMMFWZUNS2Q,dHXxtyUVTGU,oDd5ilMR1VY,-MUEXGaxFDA,K1EqI3PT4gA,VB8lIwhOsP4,r66_oUq0xdQ,ZcaWPrhgFeA,BFO0vNv2eVg,2aSHYRN3AVU,fZbE2AuNUa4,YkMhkMDYUFQ,Q0Dfy_50O3I,fPIw-BxazY4,Lhv_yFMuwxs,G8Su5LiDBeY,MGkWSAnoDOI,2y7C8gIpyTI,sURsD_zgOD0,-daTpfB-7K4,Qj6hbmsbzJI,B7qRzcM_0DQ,AuKMQdx2bVA,Wow7-W0S9yg,RFyC6nZF5DI,uRmHYHJfACI,DFi6UmNSlqQ,FcxyJ2P8J-g,CIpOxa5hxOw,VRLEw3INDrw,Qt-mcuEbNhA,dbPHCjZ-lHw,uIO0_7eoNtY,Uw_hZfH5Ukc,KCVbMHBC9_Q,qqEpSOFDXGA,V79D8__4W9g,YsQV_jNpsN4,xSNuGW3RYbM,mtWSnc0wY58,CabgQgQzg_M,Kw1iFt_Orss,tL03wEJ1XQ8,1_anq7v9wgA,Keq5gEfXSig,8YkgTj1byhk,e-7lBX_7MYM,ryzydqQuy2o,zHY23JHN0QA,EONxxLEIg58,-NqdYdxuHqg,zVbLhzijKcU,kOMu_1V7pYg,ebFe5p4KK9c,gWlrZOSQqw8,VkyNqGsfJdM,o2rVEXYEBm8,NVVAM2OVeJk,-iNHtdL-zu4,wQUH06QRCi4,vy63u2hKoPE,M_ILJPebGqY,Ni3CazygOh4,lFH_sLohbRQ,rQAyqAcs2-Y,BCqcBa9PhUw,_KAK3H63py0,XcKt0r8hs7A,6I_WUY5pMNA,QUiqQfC8pzY,ce17Ui_eqJ4,vFZJWy96HV4,LgUnKB2nY-4,3QyVHDclDME,-r8SNChzuig,ySomRVNEHJ8,adFwka_CeUA,MJOCo70Esgs,zjZlaXqiQbM,lt7ZA5-Mzzw,bzcU35P1SLc,LDQEqhZ0TQc,rngLO3tF2mA,MxnD6VNrvoQ,HdMb9VJmurA,LkLgVHTwAZg,nBQZ6aa58sM,NRtnUVaRwXM,iwG36P3_sYo,rDAAs3Ka3Mo,04fY5z4EqJA,EIZa5k7Wgsk,d6A0ONcdoUw,B08xZ4EB_6o,XV-WBlRmn9U,D5DsP4InJ2M,1T3qLsrwZWA,IGoODIzEsYI,gJoKDx3JqWY,ysNsc6urkAA,CGLGXkEyE3w,S7TVzCTlS68,NssVxzzqFM4,ZMYQ4rhwJto,ZUj6k5LQrJ0,gLhhWZQGYKQ,psNrzFBn7ZM,4ClT5rkAPNM,ePypW6n1egQ,yfkTVP1k-pU,cmmd2mBq-Mw,nLhsEbePRgI,d71JsQLouHs,WTRZ1kY7yeo,kWr6uj6VoPg,ge1mZ_CoGqs,oD9xLG0udmo,08WiUcJmnZc,9FoplMcjbN8,zHDOQeZuuIc,2DELh58ny_c,LpsuEfJEMvw,ZGD_jGQN7jo,xUGjq-Q-ICE,JWmHw2SoHVU,aRBIIBLR4V8,gIYb014up6g,UhJiV8CQ-kA,NB1Jj5YB1Zo,GhNDXbMHK8A,sUzQg8q6tys,Fk3C7GFdakI,vE3lp5FOYvE,whB4BvBRtmc,D2G3K66BaD4,YE8zn7E_ji8,5zKxbFBhjI4,HdZK0uJyfqM,LOK7wZaVlLU,-uWEmpLGWlE,gmWtul9NBgU,oLNPWJ45NuU,YSdzkOhyqAk,GeszARkWZw0,kct49vjO-rU,F1t7tM8Eg1k,hhPQH2rl9zw,06RgdZad7zY,T928kJvqTlo,0jEq8-YtFw8,ieqPiZJzAE0,sFK4Lyii9lc,XTtsDRjOYJ8,F9PyuTNvv3Y,YPyYKgeFAmI,6cayt_NMH-Y,VsXb0WGqi5w,GO66cpSXp6w,SzgNSgEXE_g,koZ8P2FFzaw,enwIdEWEHZ8,hkYSjiC2lTk,HX_chhBXuGc,VT9fjbZUimM,z6rjz2r3QLE,pCDT4cJk-O4,fxgvbUBx6UM,SG-VQQM3Ngo,QLI4PrdVHoc,1q4YY4Bsx_c,CTVrZNHL04Y,mBJvEiWRvYc,XDqIw5r33-Q,Q89OdbX7A8E,26Rl096vMf0,66VnOdk6oto,SPWKAiRhZcs,R9qv6ti0YnI,3w7hhqBNoDY,9jL5wubhfkc,j_wHIfR3YjI,87U3mmNOl0o,aqTgx85M8zA,4rcbquB0jcs,xizN47Box_Y,oEA-_n88nAs,TcTh6efW0N4,c5drEp9Y5ww,w_KGbsX-Res,ah4T4trAlsY,OOtTeOkfV8A,jmfsEUV9cj4,SR0NH9cuvvc,S37_XuxHCSE,evIpx9Onc2c,m9xqO9kKqyk,1VM9SsXCMkM,6YEm6lRLzmU,9rY2ojbsUbc,q-GcAMSSlzI,nzSiTDfaZN8,JpPbmS6uGrw,WlUcTBaD3DM,hiWr2ekLBPY,eJdq1IjW87Q,DGwW4EHgV6o,NB7WuqWzDhw,ej6MZk_MBJU,xqe0-uYHqnM,5IrNei6jlUk,XrpSuLRsbWc,PI9zxFJ2g9M,uOpt3eUvQEU,adnULAq2c4U,jlfURMRq5fM,iH5I6USjqr4,abyRALqmwRE,-N5oZH74wEA,EkXu0bPHP-0,jRnXZj8ttTM,Vd6MA5KGXIA,TcYaoqM9_DI,VoaTLg6Vkf8,8P9QjFKneTw,iG3yzuAy57Q,CLjKL0MKtF0,JAERSythI5c,9C9lfOFa2SU,tf5y5kfKPCM,9AOmAa96Fb4,FVsfV4-GyaM,ICcNkseFQXg,10FMCGj902Y,WVgADxSQ2Rs,V2B4uCO9oNc,tHilBKNp0hA,cZid3J36wH8,kLp_Hh6DKWc,0cwlSCAN-M0,MrzeAF94YFo,Hd1mFg7kvtk,K4MA3NCuDYw,uOiOl2GQ-jY,wkyuiTZAEAc,KX0bBeKFi4c,dM5sIBIRDLQ,440b2EJMOoU,tqblOxgyBMI,RFx4MSt5Kt4
+          EOF
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          old=[x.strip() for x in Path('old_ids.txt').read_text().strip().split(',') if x.strip()]
+          cur=[]
+          titles={}
+          for line in Path('current.jsonl').read_text(encoding='utf-8').splitlines():
+              x=json.loads(line); vid=x.get('id')
+              if vid:
+                  cur.append(vid); titles[vid]=x.get('title')
+          oldset=set(old); curset=set(cur)
+          add=[{'id':v,'title':titles.get(v),'index':cur.index(v)+1} for v in cur if v not in oldset]
+          rem=[{'id':v,'old_index':old.index(v)+1} for v in old if v not in curset]
+          pure=(len(add)==1 and not rem and cur[1:]==old and cur[0]==add[0]['id'])
+          print('DIFF_RESULT',json.dumps({'old_count':len(old),'current_count':len(cur),'additions':add,'removals':rem,'pure_prepend':pure},ensure_ascii=False))
+          PY
